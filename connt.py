@@ -57,7 +57,7 @@ def HTServer(conn, rport):
             break
 
     if conn in tcplist:
-        tcplist[conn].close() # 关闭RegProxy的链接
+        tcplist[conn].close() # 关闭RegProxy链接
         del tcplist[conn]
 
     conn.close()
@@ -103,7 +103,7 @@ def HHServer(conn, addr, agre):
             break
 
     if conn in proxylist:
-        proxylist[conn].close() # 关闭RegProxy的链接
+        proxylist[conn].close() # 关闭RegProxy链接
         del proxylist[conn]
 
     logger.debug('Closing')
@@ -124,7 +124,7 @@ def HKServer(conn, addr, agre):
     while True:
         try:
             data = conn.recv(1024*8)
-            if pingtime + 60 < time.time() and pingtime != 0:# 心跳超时
+            if pingtime + 60 < time.time() and pingtime != 0: # 心跳超时
                 logger.debug('Ping Timeout')
                 break
 
@@ -242,7 +242,7 @@ def HKServer(conn, addr, agre):
                     del TCPS[Tunnel]
                 logger.debug('Remove Tunnel :%s' % str(Tunnel))
             del Tunnels[ClientId]
-            logger.debug('Remove Reglist :%s' % ClientId)
+            logger.debug('Remove ClientId :%s' % ClientId)
 
     logger.debug('Closing')
     conn.close()

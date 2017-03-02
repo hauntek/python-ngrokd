@@ -124,7 +124,7 @@ def HKServer(conn, addr, agre):
     while True:
         try:
             data = conn.recv(1024*8)
-            if pingtime + 60 < time.time() and pingtime != 0: # 心跳超时
+            if pingtime + 30 < time.time() and pingtime != 0: # 心跳超时
                 logger.debug('Ping Timeout')
                 break
 
@@ -209,11 +209,22 @@ def HKServer(conn, addr, agre):
                             sendpack(conn, NewTunnel(Error=Error))
                             break
                         else:
-                            threading.Thread(target = tcp_service, args = (SERVERHOST, rport)).start() # 服务启用,TCP_SERVICE
+                            try:
+                                server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                server.bind((SERVERHOST, rport))
+                                server.listen(5)
+                                server.setblocking(1)
+                            except socket.error:
+                                Error = 'The tunnel %s is already registered.' % url
+                                sendpack(conn, NewTunnel(Error=Error))
+                                break
+
+                            threading.Thread(target = tcp_service, args = (server, rport)).start() # 服务启用,TCP_SERVICE
 
                             TCPINFO = dict()
                             TCPINFO['sock'] = conn
                             TCPINFO['clientid'] = ClientId
+                            TCPINFO['server'] = server
                             TCPS[rport] = TCPINFO
                             if ClientId in Tunnels:
                                 Tunnels[ClientId] += [rport]
@@ -239,6 +250,7 @@ def HKServer(conn, addr, agre):
                 if Tunnel in HOSTS:
                     del HOSTS[Tunnel]
                 if Tunnel in TCPS:
+                    TCPS[Tunnel]['server'].close()
                     del TCPS[Tunnel]
                 logger.debug('Remove Tunnel :%s' % str(Tunnel))
             del Tunnels[ClientId]

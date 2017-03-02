@@ -21,13 +21,9 @@ def log_service(times):
         time.sleep(times)
         Server_list()
 
-def tcp_service(host, post):
+def tcp_service(server, post):
     from connt import HTServer
     try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind((host, post))
-        server.listen(5)
-        server.setblocking(1)
         while True:
             conn, addr = server.accept()
             thread = threading.Thread(target = HTServer, args = (conn, post))

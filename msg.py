@@ -56,20 +56,20 @@ def lentobyte(len):
     xx1 = struct.pack('I', 0)
     return xx + xx1
 
-def sendbuf(sock, buf, isblock = True):
-    if isblock:
-        sock.setblocking(0)
-    sock.send(buf)
+def sendbuf(sock, buf, isblock = False):
     if isblock:
         sock.setblocking(1)
+    sock.sendall(buf)
+    if isblock:
+        sock.setblocking(0)
 
-def sendpack(sock, msg, isblock = True):
-    if isblock:
-        sock.setblocking(0)
-    sock.send(lentobyte(len(msg)))
-    sock.send(msg.encode('utf-8'))
+def sendpack(sock, msg, isblock = False):
     if isblock:
         sock.setblocking(1)
+    sock.sendall(lentobyte(len(msg)))
+    sock.sendall(msg.encode('utf-8'))
+    if isblock:
+        sock.setblocking(0)
 
 def tolen(v):
     import struct

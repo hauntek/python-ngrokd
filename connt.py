@@ -77,27 +77,28 @@ def HHServer(conn, addr, agre):
                 break # 短链接
 
             heads = httphead(data.decode('utf-8'))
-            if heads['Host'] in HOSTS:
-                Host = HOSTS[heads['Host']]
-                sendpack(Host['sock'], ReqProxy())
-                if Host['clientid'] in reglist:
-                    regitem = reglist[Host['clientid']]
+            if 'Host' in heads:
+                if heads['Host'] in HOSTS:
+                    Host = HOSTS[heads['Host']]
+                    sendpack(Host['sock'], ReqProxy())
+                    if Host['clientid'] in reglist:
+                        regitem = reglist[Host['clientid']]
+                    else:
+                        regitem = list()
+                    reginfo = dict()
+                    reginfo['Protocol'] = agre
+                    reginfo['Host'] = heads['Host']
+                    reginfo['rsock'] = conn
+                    reginfo['buf'] = data
+                    regitem.append(reginfo)
+                    reglist[Host['clientid']] = regitem
                 else:
-                    regitem = list()
-                reginfo = dict()
-                reginfo['Protocol'] = agre
-                reginfo['Host'] = heads['Host']
-                reginfo['rsock'] = conn
-                reginfo['buf'] = data
-                regitem.append(reginfo)
-                reglist[Host['clientid']] = regitem
-            else:
-                html = 'Tunnel %s not found' % heads['Host']
-                header = "HTTP/1.0 404 Not Foun" + "\r\n"
-                header += "Content-Length: %d" + "\r\n"
-                header += "\r\n" + "%s"
-                buf = header % (len(html), html)
-                sendbuf(conn, buf.encode('utf-8'))
+                    html = 'Tunnel %s not found' % heads['Host']
+                    header = "HTTP/1.0 404 Not Foun" + "\r\n"
+                    header += "Content-Length: %d" + "\r\n"
+                    header += "\r\n" + "%s"
+                    buf = header % (len(html), html)
+                    sendbuf(conn, buf.encode('utf-8'))
 
         except socket.error:
             break
@@ -119,24 +120,26 @@ def HKServer(conn, addr, agre):
     global proxylist
     global tcplist
     logger = logging.getLogger('%s:%d' % (agre, conn.fileno()))
+    recvbuf = bytes()
     ClientId = ''
     pingtime = 0
     while True:
         try:
-            data = conn.recv(1024*8)
             if pingtime + 30 < time.time() and pingtime != 0: # 心跳超时
                 logger.debug('Ping Timeout')
                 break
 
-            if not data: break
+            recvbut = conn.recv(1024*8)
+            if not recvbut: break
+            if len(recvbut) > 0:
+                if not recvbuf:
+                    recvbuf = recvbut
+                else:
+                    recvbuf += recvbut
 
-            if conn in tosocklist:
-                sendbuf(tosocklist[conn], data) # 数据转发给网页端
-                continue
-
-            lenbyte = tolen(data[0:4])
-            if len(data) >= (8 + lenbyte):
-                buf = data[8:].decode('utf-8')
+            lenbyte = tolen(recvbuf[0:4])
+            if len(recvbuf) >= (8 + lenbyte):
+                buf = recvbuf[8:].decode('utf-8')
                 logger.debug('message: %s' % buf)
                 logger.debug('message with length: %d' % len(buf))
                 js = json.loads(buf)
@@ -236,6 +239,15 @@ def HKServer(conn, addr, agre):
                 if js['Type'] == 'Ping':
                     pingtime = time.time()
                     sendpack(conn, Pong())
+
+                if len(recvbuf) == (8 + lenbyte):
+                    recvbuf = bytes()
+                else:
+                    recvbuf = recvbuf[8 + lenbyte:]
+
+            if conn in tosocklist:
+                sendbuf(tosocklist[conn], recvbuf) # 数据转发给网页端
+                recvbuf = bytes()
 
         except socket.error:
             break

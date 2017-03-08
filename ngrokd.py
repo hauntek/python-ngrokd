@@ -1,3 +1,8 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+# 建议Python 2.7.13 或 Python 3.1 以上运行
+# 项目地址: https://github.com/hauntek/python-ngrokd
+# Version: v1.38
 import socket
 import ssl
 import time

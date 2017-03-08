@@ -139,7 +139,7 @@ def HKServer(conn, addr, agre):
 
             lenbyte = tolen(recvbuf[0:4])
             if len(recvbuf) >= (8 + lenbyte):
-                buf = recvbuf[8:].decode('utf-8')
+                buf = recvbuf[8:lenbyte + 8].decode('utf-8')
                 logger.debug('message: %s' % buf)
                 logger.debug('message with length: %d' % len(buf))
                 js = json.loads(buf)

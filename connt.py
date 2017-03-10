@@ -31,7 +31,7 @@ def HTServer(conn, rport):
     global tcplist
     while True:
         try:
-            data = conn.recv(1024*8)
+            data = conn.recv(bufsize)
             if not data: break
 
             if conn in tcplist:
@@ -69,7 +69,7 @@ def HHServer(conn, addr, agre):
     logger = logging.getLogger('%s:%d' % (agre, conn.fileno()))
     while True:
         try:
-            data = conn.recv(1024*8)
+            data = conn.recv(bufsize)
             if not data: break
 
             if conn in proxylist:
@@ -97,7 +97,7 @@ def HHServer(conn, addr, agre):
                     header = "HTTP/1.0 404 Not Foun" + "\r\n"
                     header += "Content-Length: %d" + "\r\n"
                     header += "\r\n" + "%s"
-                    buf = header % (len(html), html)
+                    buf = header % (len(html.encode('utf-8')), html)
                     sendbuf(conn, buf.encode('utf-8'))
 
         except socket.error:
@@ -129,7 +129,7 @@ def HKServer(conn, addr, agre):
                 logger.debug('Ping Timeout')
                 break
 
-            recvbut = conn.recv(1024*8)
+            recvbut = conn.recv(bufsize)
             if not recvbut: break
             if len(recvbut) > 0:
                 if not recvbuf:

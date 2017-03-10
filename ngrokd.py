@@ -18,6 +18,8 @@ SERVERPORT = 4443
 pemfile = 'snakeoil.crt' # 服务证书公钥
 keyfile = 'snakeoil.key' # 服务证书密钥
 
+bufsize = 1024*8 # 吞吐量
+
 logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(lineno)d] [%(name)s] %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
 
 def log_service(times):
@@ -58,7 +60,7 @@ def https_service(host, post, certfile=pemfile, keyfile=keyfile):
             except ssl.SSLError:
                 pass
 
-    except socket.error:
+    except Exception:
         logging.error('Service failed to build, port is occupied by other applications' % post)
         time.sleep(10)
 
@@ -79,7 +81,7 @@ def http_service(host, post):
             thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
             thread.start()
 
-    except socket.error:
+    except Exception:
         logging.error('Service failed to build, port is occupied by other applications' % post)
         time.sleep(10)
 
@@ -104,7 +106,7 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
             except ssl.SSLError:
                 pass
 
-    except socket.error:
+    except Exception:
         logging.error('Service failed to build, port is occupied by other applications' % post)
         time.sleep(10)
 

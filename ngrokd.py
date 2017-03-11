@@ -2,9 +2,10 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 2.7.13 或 Python 3.1 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: v1.38
+# Version: v1.41
 import socket
 import ssl
+import sys
 import time
 import logging
 import threading
@@ -33,7 +34,8 @@ def tcp_service(server, post):
     try:
         while True:
             conn, addr = server.accept()
-            thread = threading.Thread(target = HTServer, args = (conn, post))
+            thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
+            thread.setDaemon(True)
             thread.start()
 
     except socket.error:
@@ -56,13 +58,13 @@ def https_service(host, post, certfile=pemfile, keyfile=keyfile):
                 logger = logging.getLogger('%s:%d' % ('https', conn.fileno()))
                 logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
                 thread = threading.Thread(target = HHServer, args = (conn, addr, 'https'))
+                thread.setDaemon(True)
                 thread.start()
             except ssl.SSLError:
                 pass
 
     except Exception:
-        logging.error('Service failed to build, port is occupied by other applications' % post)
-        time.sleep(10)
+        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
 
     ssl_server.close()
 
@@ -79,11 +81,11 @@ def http_service(host, post):
             logger = logging.getLogger('%s:%d' % ('http', conn.fileno()))
             logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
             thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
+            thread.setDaemon(True)
             thread.start()
 
     except Exception:
-        logging.error('Service failed to build, port is occupied by other applications' % post)
-        time.sleep(10)
+        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
 
     server.close()
 
@@ -102,19 +104,24 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
                 logger = logging.getLogger('%s:%d' % ('service', conn.fileno()))
                 logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
                 thread = threading.Thread(target = HKServer, args = (conn, addr, 'service'))
+                thread.setDaemon(True)
                 thread.start()
             except ssl.SSLError:
                 pass
 
     except Exception:
-        logging.error('Service failed to build, port is occupied by other applications' % post)
-        time.sleep(10)
+        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
 
     ssl_server.close()
 
 # 服务端程序初始化
 if __name__ == '__main__':
-    threading.Thread(target = service, args = (SERVERHOST, SERVERPORT)).start() # 服务启用,SERVICE
-    threading.Thread(target = http_service, args = (SERVERHOST, SERVERHTTP)).start() # 服务启用,HTTP_SERVICE
-    threading.Thread(target = https_service, args = (SERVERHOST, SERVERHTTPS)).start() # 服务启用,HTTPS_SERVICE
-    threading.Thread(target = log_service, args = (20, )).start() # 服务启用,LOG_SERVICE
+    threading.Thread(daemon=True, target = service, args = (SERVERHOST, SERVERPORT)).start() # 服务启用,SERVICE
+    threading.Thread(daemon=True, target = http_service, args = (SERVERHOST, SERVERHTTP)).start() # 服务启用,HTTP_SERVICE
+    threading.Thread(daemon=True, target = https_service, args = (SERVERHOST, SERVERHTTPS)).start() # 服务启用,HTTPS_SERVICE
+    threading.Thread(daemon=True, target = log_service, args = (30, )).start() # 服务启用,LOG_SERVICE
+    while True:
+        try:
+            time.sleep(1)
+        except KeyboardInterrupt:
+            sys.exit()

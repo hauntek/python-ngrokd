@@ -26,7 +26,7 @@ def Server_list():
     logging.debug(log_str)
 
 # 服务端程序处理过程
-def HTServer(conn, rport):
+def HTServer(conn, addr, agre):
     global reglist
     global tcplist
     while True:
@@ -38,6 +38,7 @@ def HTServer(conn, rport):
                 sendbuf(tcplist[conn], data) # 数据转发给客户端
                 continue # 长链接
 
+            rport = conn.getsockname()[1]
             if rport in TCPS:
                 tcp = TCPS[rport]
                 sendpack(tcp['sock'], ReqProxy())
@@ -46,7 +47,7 @@ def HTServer(conn, rport):
                 else:
                     regitem = list()
                 reginfo = dict()
-                reginfo['Protocol'] = 'tcp'
+                reginfo['Protocol'] = agre
                 reginfo['rport'] = rport
                 reginfo['rsock'] = conn
                 reginfo['buf'] = data
@@ -119,10 +120,10 @@ def HKServer(conn, addr, agre):
     global tosocklist
     global proxylist
     global tcplist
-    logger = logging.getLogger('%s:%d' % (agre, conn.fileno()))
     recvbuf = bytes()
     ClientId = ''
     pingtime = 0
+    logger = logging.getLogger('%s:%d' % (agre, conn.fileno()))
     while True:
         try:
             if pingtime + 30 < time.time() and pingtime != 0: # 心跳超时
@@ -149,28 +150,29 @@ def HKServer(conn, addr, agre):
                     sendpack(conn, AuthResp(ClientId=ClientId))
 
                 if js['Type'] == 'RegProxy':
-                    ClientId = js['Payload']['ClientId']
-                    if ClientId in reglist:
-                        linkinfo = reglist[ClientId].pop() # 取出最后一个数据并删除
-                        if linkinfo['Protocol'] == 'http' or linkinfo['Protocol'] == 'https':
-                            tosock = linkinfo['rsock']
-                            tosocklist[conn] = tosock
-                            sockinfo = tosock.getpeername()
-                            url = linkinfo['Protocol'] + '://' + linkinfo['Host']
-                            clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-                            sendpack(conn, StartProxy(url, clientaddr))
-                            sendbuf(conn, linkinfo['buf']) # 请求头转发给客户端
-                            proxylist[tosock] = conn # 许可HHServer直接转发客户端
+                    TEMP_ClientId = js['Payload']['ClientId']
+                    if TEMP_ClientId in reglist:
+                        if len(reglist[TEMP_ClientId]) > 0:
+                            linkinfo = reglist[TEMP_ClientId].pop() # 取出最后一个数据并删除
+                            if linkinfo['Protocol'] == 'http' or linkinfo['Protocol'] == 'https':
+                                tosock = linkinfo['rsock']
+                                tosocklist[conn] = tosock
+                                sockinfo = tosock.getpeername()
+                                url = linkinfo['Protocol'] + '://' + linkinfo['Host']
+                                clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
+                                sendpack(conn, StartProxy(url, clientaddr))
+                                sendbuf(conn, linkinfo['buf']) # 请求头转发给客户端
+                                proxylist[tosock] = conn # 许可HHServer直接转发客户端
 
-                        if linkinfo['Protocol'] == 'tcp':
-                            tosock = linkinfo['rsock']
-                            tosocklist[conn] = tosock
-                            sockinfo = tosock.getpeername()
-                            url = linkinfo['Protocol'] + '://' + SERVERDOMAIN + ':' + str(linkinfo['rport'])
-                            clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-                            sendpack(conn, StartProxy(url, clientaddr))
-                            sendbuf(conn, linkinfo['buf']) # 转发请求头给客户端
-                            tcplist[tosock] = conn # 许可HTServer直接转发客户端
+                            if linkinfo['Protocol'] == 'tcp':
+                                tosock = linkinfo['rsock']
+                                tosocklist[conn] = tosock
+                                sockinfo = tosock.getpeername()
+                                url = linkinfo['Protocol'] + '://' + SERVERDOMAIN + ':' + str(linkinfo['rport'])
+                                clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
+                                sendpack(conn, StartProxy(url, clientaddr))
+                                sendbuf(conn, linkinfo['buf']) # 转发请求头给客户端
+                                tcplist[tosock] = conn # 许可HTServer直接转发客户端
 
                 if js['Type'] == 'ReqTunnel':
                     if js['Payload']['Protocol'] == 'http' or js['Payload']['Protocol'] == 'https':
@@ -217,12 +219,12 @@ def HKServer(conn, addr, agre):
                                 server.bind((SERVERHOST, rport))
                                 server.listen(5)
                                 server.setblocking(1)
-                            except socket.error:
+                            except Exception:
                                 Error = 'The tunnel %s is already registered.' % url
                                 sendpack(conn, NewTunnel(Error=Error))
                                 break
 
-                            threading.Thread(target = tcp_service, args = (server, rport)).start() # 服务启用,TCP_SERVICE
+                            threading.Thread(daemon=True, target = tcp_service, args = (server, rport)).start() # 服务启用,TCP_SERVICE
 
                             TCPINFO = dict()
                             TCPINFO['sock'] = conn
@@ -256,17 +258,16 @@ def HKServer(conn, addr, agre):
         tosocklist[conn].close() # 关闭网页端链接
         del tosocklist[conn]
 
-    if pingtime != 0:
-        if ClientId in Tunnels:
-            for Tunnel in Tunnels[ClientId]:
-                if Tunnel in HOSTS:
-                    del HOSTS[Tunnel]
-                if Tunnel in TCPS:
-                    TCPS[Tunnel]['server'].close()
-                    del TCPS[Tunnel]
-                logger.debug('Remove Tunnel :%s' % str(Tunnel))
-            del Tunnels[ClientId]
-            logger.debug('Remove ClientId :%s' % ClientId)
+    if ClientId in Tunnels:
+        for Tunnel in Tunnels[ClientId]:
+            if Tunnel in HOSTS:
+                del HOSTS[Tunnel]
+            if Tunnel in TCPS:
+                TCPS[Tunnel]['server'].close()
+                del TCPS[Tunnel]
+            logger.debug('Remove Tunnel :%s' % str(Tunnel))
+        del Tunnels[ClientId]
+        logger.debug('Remove ClientId :%s' % ClientId)
 
     logger.debug('Closing')
     conn.close()

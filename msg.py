@@ -1,10 +1,10 @@
 import json
 
-def AuthResp(ClientId = '', Error = ''):
+def AuthResp(ClientId = '', Version = '2', MmVersion = '1.7', Error = ''):
     Payload = dict()
     Payload['ClientId'] = ClientId
-    Payload['Version'] = '2'
-    Payload['MmVersion'] = '1.7'
+    Payload['Version'] = Version
+    Payload['MmVersion'] = MmVersion
     Payload['Error'] = Error
     body = dict()
     body['Type'] = 'AuthResp'

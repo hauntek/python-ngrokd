@@ -1,6 +1,8 @@
+#!/usr/bin/env python
+# coding=utf-8
 import json
 
-def AuthResp(ClientId = '', Version = '2', MmVersion = '1.7', Error = ''):
+def AuthResp(ClientId='', Version='2', MmVersion='1.7', Error=''):
     Payload = dict()
     Payload['ClientId'] = ClientId
     Payload['Version'] = Version
@@ -12,7 +14,7 @@ def AuthResp(ClientId = '', Version = '2', MmVersion = '1.7', Error = ''):
     buffer = json.dumps(body)
     return(buffer)
 
-def NewTunnel(ReqId = '', Url = '', Protocol = '', Error = ''):
+def NewTunnel(ReqId='', Url='', Protocol='', Error=''):
     Payload = dict()
     Payload['ReqId'] = ReqId
     Payload['Url'] = Url
@@ -71,7 +73,7 @@ def sendpack(sock, msg, isblock = False):
     if isblock:
         sock.setblocking(0)
 
-def tolen(v):
+def unpack(v):
     import struct
     return struct.unpack('I', v)[0]
 

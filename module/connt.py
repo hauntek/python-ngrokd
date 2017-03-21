@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# coding=utf-8
+
 from ngrokd import *
 from msg import *
 
@@ -112,7 +115,8 @@ def HHServer(conn, addr, agre):
     conn.close()
 
 # 服务端程序处理过程
-def HKServer(conn, addr, agre):
+def HKServer(conn, addr):
+    # 这个agre词义不明，而且貌似作用不大，删之
     global HOSTS
     global TCPS
     global Tunnels
@@ -121,28 +125,29 @@ def HKServer(conn, addr, agre):
     global proxylist
     global tcplist
     recvbuf = bytes()
-    ClientId = ''
+    ClientId = bytes()
     pingtime = 0
-    logger = logging.getLogger('%s:%d' % (agre, conn.fileno()))
     while True:
         try:
-            if pingtime + 30 < time.time() and pingtime != 0: # 心跳超时
-                logger.debug('Ping Timeout')
+            if (pingtime + 30 < time.time()) and (pingtime != 0):
+                # 心跳超时
+                logging.info('Ping Timeout')
                 break
 
             recvbut = conn.recv(bufsize)
-            if not recvbut: break
+            if not recvbut:
+                break
             if len(recvbut) > 0:
                 if not recvbuf:
                     recvbuf = recvbut
                 else:
                     recvbuf += recvbut
 
-            lenbyte = tolen(recvbuf[0:4])
+            lenbyte = unpack(recvbuf[0:4])
             if len(recvbuf) >= (8 + lenbyte):
                 buf = recvbuf[8:lenbyte + 8].decode('utf-8')
-                logger.debug('message: %s' % buf)
-                logger.debug('message with length: %d' % len(buf))
+                logging.debug('message: %s' % buf)
+                logging.debug('message with length: %d' % len(buf))
                 js = json.loads(buf)
                 if js['Type'] == 'Auth':
                     pingtime = time.time()
@@ -168,7 +173,7 @@ def HKServer(conn, addr, agre):
                                 tosock = linkinfo['rsock']
                                 tosocklist[conn] = tosock
                                 sockinfo = tosock.getpeername()
-                                url = linkinfo['Protocol'] + '://' + SERVERDOMAIN + ':' + str(linkinfo['rport'])
+                                url = linkinfo['Protocol'] + '://' + server_domain + ':' + str(linkinfo['rport'])
                                 clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
                                 sendpack(conn, StartProxy(url, clientaddr))
                                 sendbuf(conn, linkinfo['buf']) # 转发请求头给客户端
@@ -181,12 +186,12 @@ def HKServer(conn, addr, agre):
                         else:
                             if len(js['Payload']['Subdomain']) == 0:
                                 js['Payload']['Subdomain'] = getRandChar(5)
-                            domain_name = js['Payload']['Subdomain'] + '.' + SERVERDOMAIN
+                            domain_name = js['Payload']['Subdomain'] + '.' + server_domain
 
-                        if js['Payload']['Protocol'] == 'http' and SERVERHTTP != 80:
-                            url = js['Payload']['Protocol'] + '://' + domain_name + ':' + str(SERVERHTTP)
-                        elif js['Payload']['Protocol'] == 'https' and SERVERHTTPS != 443:
-                            url = js['Payload']['Protocol'] + '://' + domain_name + ':' + str(SERVERHTTPS)
+                        if js['Payload']['Protocol'] == 'http' and server_http != 80:
+                            url = js['Payload']['Protocol'] + '://' + domain_name + ':' + str(server_http)
+                        elif js['Payload']['Protocol'] == 'https' and server_https != 443:
+                            url = js['Payload']['Protocol'] + '://' + domain_name + ':' + str(server_https)
                         else:
                             url = js['Payload']['Protocol'] + '://' + domain_name
 
@@ -208,7 +213,7 @@ def HKServer(conn, addr, agre):
 
                     if js['Payload']['Protocol'] == 'tcp':
                         rport = js['Payload']['RemotePort']
-                        url = js['Payload']['Protocol'] + '://' + SERVERDOMAIN + ':' + str(rport)
+                        url = js['Payload']['Protocol'] + '://' + server_domain + ':' + str(rport)
                         if rport in TCPS:
                             Error = 'The tunnel %s is already registered.' % url
                             sendpack(conn, NewTunnel(Error=Error))
@@ -216,7 +221,7 @@ def HKServer(conn, addr, agre):
                         else:
                             try:
                                 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                server.bind((SERVERHOST, rport))
+                                server.bind((server_host, rport))
                                 server.listen(5)
                                 server.setblocking(1)
                             except Exception:

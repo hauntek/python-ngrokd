@@ -10,31 +10,40 @@ import time
 import logging
 import threading
 
-SERVERDOMAIN = 'ngrok.com' # 服务域名
-SERVERHOST = ''
-SERVERHTTP = 80
-SERVERHTTPS = 443
-SERVERPORT = 4443
+# 服务域名
+server_domain = 'ngrok.com'
 
-pemfile = 'snakeoil.crt' # 服务证书公钥
-keyfile = 'snakeoil.key' # 服务证书密钥
+server_host = '127.0.0.1'
+server_http = 8080
+server_https = 4439
+server_port = 4443
 
-bufsize = 1024*8 # 吞吐量
+# 服务证书公钥
+pemfile = 'key/snakeoil.crt'
+# 服务证书密钥
+keyfile = 'key/snakeoil.key'
+# 吞吐量
+bufsize = 1024*8
 
-logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(lineno)d] [%(name)s] %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
+logging.basicConfig(
+    level=logging.NOTSET,
+    format='[%(asctime)s] [%(levelname)s:%(lineno)d] [%(filename)s(thread name: %(threadName)s thread number: %(thread)d)] %(message)s',
+    datefmt='%Y/%m/%d %H:%M:%S',
+    stream=sys.stdout
+)
 
 def log_service(times):
-    from connt import Server_list
+    from module import connt
     while True:
         time.sleep(times)
-        Server_list()
+        connt.Server_list()
 
 def tcp_service(server, post):
-    from connt import HTServer
+    from module import connt
     try:
         while True:
             conn, addr = server.accept()
-            thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
+            thread = threading.Thread(target=connt.HTServer, args=(conn, addr, 'tcp'))
             thread.setDaemon(True)
             thread.start()
 
@@ -44,7 +53,7 @@ def tcp_service(server, post):
     server.close()
 
 def https_service(host, post, certfile=pemfile, keyfile=keyfile):
-    from connt import HHServer
+    from module import connt
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile, server_side=True)
@@ -57,7 +66,7 @@ def https_service(host, post, certfile=pemfile, keyfile=keyfile):
                 conn, addr = ssl_server.accept()
                 logger = logging.getLogger('%s:%d' % ('https', conn.fileno()))
                 logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
-                thread = threading.Thread(target = HHServer, args = (conn, addr, 'https'))
+                thread = threading.Thread(target = connt.HHServer, args = (conn, addr, 'https'))
                 thread.setDaemon(True)
                 thread.start()
             except ssl.SSLError:
@@ -69,41 +78,41 @@ def https_service(host, post, certfile=pemfile, keyfile=keyfile):
     ssl_server.close()
 
 def http_service(host, post):
-    from connt import HHServer
+    from module import connt
     try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind((host, post))
-        server.listen(5)
-        server.setblocking(1)
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind((host, post))
+        server_sock.listen(5)
+        server_sock.setblocking(1)
         logging.debug('[%s:%s] Service establishment success' % (host, post))
         while True:
-            conn, addr = server.accept()
-            logger = logging.getLogger('%s:%d' % ('http', conn.fileno()))
-            logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
-            thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
+            conn, addr = server_sock.accept()
+            logging.debug('New Client to: %s:%s' % (addr[0], addr[1]))
+            thread = threading.Thread(target = connt.HHServer, args = (conn, addr, 'http'))
             thread.setDaemon(True)
             thread.start()
 
     except Exception:
         logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
 
-    server.close()
+    server_sock.close()
 
 def service(host, post, certfile=pemfile, keyfile=keyfile):
-    from connt import HKServer
+    from module import connt
     try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile)
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssl_server = ssl.wrap_socket(server_sock, certfile=certfile, keyfile=keyfile)
         ssl_server.bind((host, post))
         ssl_server.listen(5)
+        # 阻塞式的套接字
         ssl_server.setblocking(1)
-        logging.debug('[%s:%s] Service establishment success' % (host, post))
+        # 这里用info比较好吧
+        logging.info('[%s:%s] Service start success' % (host, post))
         while True:
             try:
                 conn, addr = ssl_server.accept()
-                logger = logging.getLogger('%s:%d' % ('service', conn.fileno()))
-                logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
-                thread = threading.Thread(target = HKServer, args = (conn, addr, 'service'))
+                logging.debug('New Client to: %s:%s' % (addr[0], addr[1]))
+                thread = threading.Thread(target=connt.HKServer, args=(conn, addr, 'service'))
                 thread.setDaemon(True)
                 thread.start()
             except ssl.SSLError:
@@ -114,14 +123,47 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
 
     ssl_server.close()
 
-# 服务端程序初始化
-if __name__ == '__main__':
-    threading.Thread(daemon=True, target = service, args = (SERVERHOST, SERVERPORT)).start() # 服务启用,SERVICE
-    threading.Thread(daemon=True, target = http_service, args = (SERVERHOST, SERVERHTTP)).start() # 服务启用,HTTP_SERVICE
-    threading.Thread(daemon=True, target = https_service, args = (SERVERHOST, SERVERHTTPS)).start() # 服务启用,HTTPS_SERVICE
-    threading.Thread(daemon=True, target = log_service, args = (30, )).start() # 服务启用,LOG_SERVICE
+def main():
+    # 服务启用,SERVICE
+    service_thread = threading.Thread(
+        target=service,
+        args=(server_host, server_port)
+        )
+    service_thread.setDaemon(True)
+    service_thread.start()
+    logging.info('Service start')
+
+    # 服务启用,HTTP_SERVICE
+    http_service_thread = threading.Thread(
+        target=http_service,
+        args=(server_host, server_http)
+        )
+    http_service_thread.setDaemon(True)
+    http_service_thread.start()
+    logging.info('http service start')
+    # 服务启用,HTTPS_SERVICE
+    https_service_thread = threading.Thread(
+        target=https_service,
+        args=(server_host, server_https)
+        )
+    https_service_thread.setDaemon(True)
+    https_service_thread.start()
+    logging.info('https service start')
+    # 服务启用,LOG_SERVICE
+    log_service_thread = threading.Thread(
+        target=log_service,
+        args=(30, )
+        )
+    log_service_thread.setDaemon(True)
+    log_service_thread.start()
+    logging.info('log service start')
+
     while True:
         try:
             time.sleep(1)
         except KeyboardInterrupt:
-            sys.exit()
+            sys.exit(0)
+
+# 服务端程序初始化
+if __name__ == '__main__':
+    main()

@@ -144,6 +144,7 @@ def HKServer(conn, addr):
                     recvbuf += recvbut
 
             lenbyte = unpack(recvbuf[0:4])
+            print(recvbuf)
             if len(recvbuf) >= (8 + lenbyte):
                 buf = recvbuf[8:lenbyte + 8].decode('utf-8')
                 logging.debug('message: %s' % buf)

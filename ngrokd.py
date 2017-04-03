@@ -25,15 +25,14 @@ logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(
 
 def tcp_service(tcp_server, post):
     from connt import HTServer
-    try:
-        while True:
+    while True:
+        try:
             conn, addr = tcp_server.accept()
             thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
             thread.setDaemon(True)
             thread.start()
-
-    except socket.error:
-        pass
+        except Exception:
+            pass
 
     tcp_server.close()
 
@@ -55,7 +54,7 @@ def https_service(host, post, certfile=pemfile, keyfile=keyfile):
                 thread = threading.Thread(target = HHServer, args = (conn, addr, 'https'))
                 thread.setDaemon(True)
                 thread.start()
-            except ssl.SSLError:
+            except Exception:
                 pass
 
     except Exception:
@@ -73,12 +72,15 @@ def http_service(host, post):
         server.setblocking(1)
         logging.debug('[%s:%s] Service establishment success' % (host, post))
         while True:
-            conn, addr = server.accept()
-            logger = logging.getLogger('%s:%d' % ('http', conn.fileno()))
-            logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
-            thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
-            thread.setDaemon(True)
-            thread.start()
+            try:
+                conn, addr = server.accept()
+                logger = logging.getLogger('%s:%d' % ('http', conn.fileno()))
+                logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
+                thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
+                thread.setDaemon(True)
+                thread.start()
+            except Exception:
+                pass
 
     except Exception:
         logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
@@ -103,7 +105,7 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
                 thread = threading.Thread(target = HKServer, args = (conn, addr, 'service'))
                 thread.setDaemon(True)
                 thread.start()
-            except ssl.SSLError:
+            except Exception:
                 pass
 
     except Exception:

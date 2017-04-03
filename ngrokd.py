@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
-# 建议Python 2.7.13 或 Python 3.1 以上运行
+# 建议Python 2.7.12 或 Python 3.1 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: v1.41
+# Version: v1.42
 import socket
 import ssl
 import sys
@@ -23,17 +23,11 @@ bufsize = 1024*8 # 吞吐量
 
 logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(lineno)d] [%(name)s] %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
 
-def log_service(times):
-    from connt import Server_list
-    while True:
-        time.sleep(times)
-        Server_list()
-
-def tcp_service(server, post):
+def tcp_service(tcp_server, post):
     from connt import HTServer
     try:
         while True:
-            conn, addr = server.accept()
+            conn, addr = tcp_server.accept()
             thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
             thread.setDaemon(True)
             thread.start()
@@ -41,13 +35,14 @@ def tcp_service(server, post):
     except socket.error:
         pass
 
-    server.close()
+    tcp_server.close()
 
 def https_service(host, post, certfile=pemfile, keyfile=keyfile):
     from connt import HHServer
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile, server_side=True)
+        ssl_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ssl_server.bind((host, post))
         ssl_server.listen(5)
         ssl_server.setblocking(1)
@@ -72,6 +67,7 @@ def http_service(host, post):
     from connt import HHServer
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, post))
         server.listen(5)
         server.setblocking(1)
@@ -94,6 +90,7 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile)
+        ssl_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ssl_server.bind((host, post))
         ssl_server.listen(5)
         ssl_server.setblocking(1)
@@ -119,7 +116,6 @@ if __name__ == '__main__':
     threading.Thread(daemon=True, target = service, args = (SERVERHOST, SERVERPORT)).start() # 服务启用,SERVICE
     threading.Thread(daemon=True, target = http_service, args = (SERVERHOST, SERVERHTTP)).start() # 服务启用,HTTP_SERVICE
     threading.Thread(daemon=True, target = https_service, args = (SERVERHOST, SERVERHTTPS)).start() # 服务启用,HTTPS_SERVICE
-    threading.Thread(daemon=True, target = log_service, args = (30, )).start() # 服务启用,LOG_SERVICE
     while True:
         try:
             time.sleep(1)

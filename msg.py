@@ -1,4 +1,5 @@
 import json
+import struct
 
 def AuthResp(ClientId = '', Version = '2', MmVersion = '1.7', Error = ''):
     Payload = dict()
@@ -51,10 +52,7 @@ def Pong():
     return(buffer)
 
 def lentobyte(len):
-    import struct
-    xx = struct.pack('I', len)
-    xx1 = struct.pack('I', 0)
-    return xx + xx1
+    return struct.pack('<LL', len, 0)
 
 def sendbuf(sock, buf, isblock = False):
     if isblock:
@@ -72,8 +70,9 @@ def sendpack(sock, msg, isblock = False):
         sock.setblocking(0)
 
 def tolen(v):
-    import struct
-    return struct.unpack('I', v)[0]
+    if len(v) == 8:
+        return struct.unpack('<II', v)[0]
+    return 0
 
 def getRandChar(length):
     import random
@@ -85,17 +84,10 @@ def md5(s):
     return hashlib.md5(s.encode('utf-8')).hexdigest().lower()
 
 def httphead(request):
-    http = request.split("\n")
-    REQUEST_METHOD = http[0][0:http[0].find(' ')]
-    back = dict()
-    for line in http:
-        pos = line.find(':')
-        if pos != -1:
-            key = line[0:pos]
-            value = line[int(pos) + 1:]
-            back[key] = value.strip()
-            back['REQUEST_METHOD'] = REQUEST_METHOD
-    if 'Host' in back:
-        if back['Host'].find(':') != -1:
-            back['Host'] = back['Host'][:back['Host'].find(':')]
-    return back
+    header, data = request.split('\r\n\r\n', 1)
+    headers = dict()
+    for line in header.split('\r\n')[1:]:
+        key, val = line.split(': ', 1)
+        headers[key] = val
+
+    return headers

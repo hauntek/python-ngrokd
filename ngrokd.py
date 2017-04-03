@@ -25,14 +25,14 @@ logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(
 
 def tcp_service(tcp_server, post):
     from connt import HTServer
-    while True:
-        try:
+    try:
+        while True:
             conn, addr = tcp_server.accept()
             thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
             thread.setDaemon(True)
             thread.start()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     tcp_server.close()
 

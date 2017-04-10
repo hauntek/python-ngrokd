@@ -35,6 +35,8 @@ def HTServer(conn, addr, agre):
                     reglist[info['clientid']].put(reginfo)
 
                     tosock = reginfo['queue'].get() # 等待队列完成
+                else:
+                    pass
 
             data = conn.recv(bufsize)
             if not data: break
@@ -89,7 +91,6 @@ def HHServer(conn, addr, agre):
             if tosock is not None:
                 sendbuf(tosock, data) # 数据转发给客户端
                 continue # 长链接
-                # break # 短链接
 
         except Exception:
             break

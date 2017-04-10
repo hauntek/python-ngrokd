@@ -18,22 +18,24 @@ def HTServer(conn, addr, agre):
     global TCPS
     global reglist
     tosock = None
-    rport = conn.getsockname()[1]
-    if rport in TCPS:
-        info = TCPS[rport]
-
-        reginfo = dict()
-        reginfo['protocol'] = agre
-        reginfo['rport'] = rport
-        reginfo['sock'] = info['sock']
-        reginfo['rsock'] = conn
-        reginfo['queue'] = Queue()
-
-        reglist[info['clientid']].put(reginfo)
-
-        tosock = reginfo['queue'].get() # 等待队列完成
     while True:
         try:
+            if tosock is None:
+                rport = conn.getsockname()[1]
+                url = agre + '://' + SERVERDOMAIN + ':' + str(rport)
+                if url in TCPS:
+                    info = TCPS[url]
+
+                    reginfo = dict()
+                    reginfo['url'] = url
+                    reginfo['sock'] = info['sock']
+                    reginfo['rsock'] = conn
+                    reginfo['queue'] = Queue()
+
+                    reglist[info['clientid']].put(reginfo)
+
+                    tosock = reginfo['queue'].get() # 等待队列完成
+
             data = conn.recv(bufsize)
             if not data: break
 
@@ -41,7 +43,7 @@ def HTServer(conn, addr, agre):
                 sendbuf(tosock, data) # 数据转发给客户端
                 continue # 长链接
 
-        except socket.error:
+        except Exception:
             break
 
     if tosock is not None:
@@ -60,36 +62,36 @@ def HHServer(conn, addr, agre):
             data = conn.recv(bufsize)
             if not data: break
 
+            if tosock is None:
+                heads = httphead(data.decode('utf-8'))
+                if 'Host' in heads:
+                    url = agre + '://' + heads['Host']
+                    if url in HOSTS:
+                        info = HOSTS[url]
+
+                        reginfo = dict()
+                        reginfo['url'] = url
+                        reginfo['sock'] = info['sock']
+                        reginfo['rsock'] = conn
+                        reginfo['queue'] = Queue()
+
+                        reglist[info['clientid']].put(reginfo)
+
+                        tosock = reginfo['queue'].get() # 等待队列完成
+                    else:
+                        html = 'Tunnel %s not found' % heads['Host']
+                        header = "HTTP/1.0 404 Not Foun" + "\r\n"
+                        header += "Content-Length: %d" + "\r\n"
+                        header += "\r\n" + "%s"
+                        buf = header % (len(html.encode('utf-8')), html)
+                        sendbuf(conn, buf.encode('utf-8'))
+
             if tosock is not None:
                 sendbuf(tosock, data) # 数据转发给客户端
                 continue # 长链接
                 # break # 短链接
 
-            heads = httphead(data.decode('utf-8'))
-            if 'Host' in heads:
-                if heads['Host'] in HOSTS:
-                    info = HOSTS[heads['Host']]
-
-                    reginfo = dict()
-                    reginfo['protocol'] = agre
-                    reginfo['host'] = heads['Host']
-                    reginfo['sock'] = info['sock']
-                    reginfo['rsock'] = conn
-                    reginfo['buf'] = data
-                    reginfo['queue'] = Queue()
-
-                    reglist[info['clientid']].put(reginfo)
-
-                    tosock = reginfo['queue'].get() # 等待队列完成
-                else:
-                    html = 'Tunnel %s not found' % heads['Host']
-                    header = "HTTP/1.0 404 Not Foun" + "\r\n"
-                    header += "Content-Length: %d" + "\r\n"
-                    header += "\r\n" + "%s"
-                    buf = header % (len(html.encode('utf-8')), html)
-                    sendbuf(conn, buf.encode('utf-8'))
-
-        except socket.error:
+        except Exception:
             break
 
     if tosock is not None:
@@ -135,29 +137,21 @@ def HKServer(conn, addr, agre):
 
                 if js['Type'] == 'RegProxy':
                     TEMP_ClientId = js['Payload']['ClientId']
+                    if not (TEMP_ClientId in reglist): break
                     linkinfo = reglist[TEMP_ClientId].get()
 
-                    if linkinfo['protocol'] == 'http' or linkinfo['protocol'] == 'https':
-                        tosock = linkinfo['rsock']
+                    if linkinfo == 'delete': # 等待消息队列退出
+                        del reglist[TEMP_ClientId]
+                        break
 
-                        sockinfo = tosock.getpeername()
-                        url = linkinfo['protocol'] + '://' + linkinfo['host']
-                        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-                        sendpack(conn, StartProxy(url, clientaddr))
-                        sendbuf(conn, linkinfo['buf']) # 请求头转发给客户端
+                    tosock = linkinfo['rsock']
 
-                        linkinfo['queue'].put(conn) # 许可HTServer直接转发客户端
+                    url = linkinfo['url']
+                    sockinfo = tosock.getpeername()
+                    clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
+                    sendpack(conn, StartProxy(url, clientaddr))
 
-                    if linkinfo['protocol'] == 'tcp':
-                        tosock = linkinfo['rsock']
-
-                        sockinfo = tosock.getpeername()
-                        url = linkinfo['protocol'] + '://' + SERVERDOMAIN + ':' + str(linkinfo['rport'])
-                        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-                        sendpack(conn, StartProxy(url, clientaddr))
-                        # sendbuf(conn, linkinfo['buf']) # 转发请求头给客户端
-
-                        linkinfo['queue'].put(conn) # 许可HTServer直接转发客户端
+                    linkinfo['queue'].put(conn) # 许可队列直接转发客户端
 
                     sendpack(linkinfo['sock'], ReqProxy())
 
@@ -185,11 +179,11 @@ def HKServer(conn, addr, agre):
                             HOSTINFO = dict()
                             HOSTINFO['sock'] = conn
                             HOSTINFO['clientid'] = ClientId
-                            HOSTS[domain_name] = HOSTINFO
+                            HOSTS[url] = HOSTINFO
                             if ClientId in Tunnels:
-                                Tunnels[ClientId] += [domain_name]
+                                Tunnels[ClientId] += [url]
                             else:
-                                Tunnels[ClientId] = [domain_name]
+                                Tunnels[ClientId] = [url]
 
                             sendpack(conn, NewTunnel(js['Payload']['ReqId'], url, js['Payload']['Protocol']))
 
@@ -217,11 +211,11 @@ def HKServer(conn, addr, agre):
                             TCPINFO['sock'] = conn
                             TCPINFO['clientid'] = ClientId
                             TCPINFO['tcp_server'] = server
-                            TCPS[rport] = TCPINFO
+                            TCPS[rport] = url
                             if ClientId in Tunnels:
-                                Tunnels[ClientId] += [rport]
+                                Tunnels[ClientId] += [url]
                             else:
-                                Tunnels[ClientId] = [rport]
+                                Tunnels[ClientId] = [url]
 
                             sendpack(conn, NewTunnel(js['Payload']['ReqId'], url, js['Payload']['Protocol']))
 
@@ -243,6 +237,9 @@ def HKServer(conn, addr, agre):
 
     if tosock is not None:
         tosock.close() # 关闭网页端链接
+
+    if ClientId in reglist:
+        reglist[ClientId].put('delete')
 
     if ClientId in Tunnels:
         for Tunnel in Tunnels[ClientId]:

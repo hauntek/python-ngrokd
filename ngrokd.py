@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 2.7.12 或 Python 3.1 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: v1.42
+# Version: v1.46
 import socket
 import ssl
 import sys

@@ -211,7 +211,7 @@ def HKServer(conn, addr, agre):
                             TCPINFO['sock'] = conn
                             TCPINFO['clientid'] = ClientId
                             TCPINFO['tcp_server'] = server
-                            TCPS[rport] = url
+                            TCPS[url] = TCPINFO
                             if ClientId in Tunnels:
                                 Tunnels[ClientId] += [url]
                             else:

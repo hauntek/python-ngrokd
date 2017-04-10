@@ -172,7 +172,7 @@ def HKServer(conn, addr, agre):
                         else:
                             url = js['Payload']['Protocol'] + '://' + domain_name
 
-                        if domain_name in HOSTS:
+                        if url in HOSTS:
                             Error = 'The tunnel %s is already registered.' % url
                             sendpack(conn, NewTunnel(Error=Error))
                             break
@@ -191,7 +191,7 @@ def HKServer(conn, addr, agre):
                     if js['Payload']['Protocol'] == 'tcp':
                         rport = js['Payload']['RemotePort']
                         url = js['Payload']['Protocol'] + '://' + SERVERDOMAIN + ':' + str(rport)
-                        if rport in TCPS:
+                        if url in TCPS:
                             Error = 'The tunnel %s is already registered.' % url
                             sendpack(conn, NewTunnel(Error=Error))
                             break

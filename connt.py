@@ -198,6 +198,7 @@ def HKServer(conn, addr, agre):
                         else:
                             try:
                                 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                                 server.bind((SERVERHOST, rport))
                                 server.listen(5)
                                 server.setblocking(1)

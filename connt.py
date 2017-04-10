@@ -232,11 +232,11 @@ def HKServer(conn, addr, agre):
                 sendbuf(tosock, recvbuf) # 数据转发给网页端
                 recvbuf = bytes()
 
-        except socket.error:
+        except Exception:
             break
 
     if tosock is not None:
-        tosock.close() # 关闭网页端链接
+        tosock.close() # 关闭访问端链接
 
     if ClientId in reglist:
         reglist[ClientId].put('delete')

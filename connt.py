@@ -126,8 +126,8 @@ def HKServer(conn, addr, agre):
             lenbyte = tolen(recvbuf[0:8])
             if len(recvbuf) >= (8 + lenbyte):
                 buf = recvbuf[8:lenbyte + 8].decode('utf-8')
-                logger.debug('message: %s' % buf)
                 logger.debug('message with length: %d' % len(buf))
+                logger.debug('message: %s' % buf)
                 js = json.loads(buf)
                 if js['Type'] == 'Auth':
                     pingtime = time.time()

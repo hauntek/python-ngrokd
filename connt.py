@@ -248,7 +248,6 @@ def HKServer(conn, addr, agre):
             if Tunnel in HOSTS:
                 del HOSTS[Tunnel]
             if Tunnel in TCPS:
-                TCPS[Tunnel]['tcp_server'].shutdown(2)
                 TCPS[Tunnel]['tcp_server'].close()
                 del TCPS[Tunnel]
             logger.debug('Remove Tunnel :%s' % str(Tunnel))

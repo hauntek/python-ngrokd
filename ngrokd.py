@@ -21,46 +21,52 @@ keyfile = 'snakeoil.key' # 服务证书密钥
 
 bufsize = 1024*8 # 吞吐量
 
-logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s:%(lineno)d] [%(name)s] %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
+logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s', datefmt='%Y/%m/%d %H:%M:%S')
 
-def tcp_service(tcp_server, post):
+def tcp_service(server, post):
     from connt import HTServer
     try:
         while True:
-            conn, addr = tcp_server.accept()
-            thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
-            thread.setDaemon(True)
-            thread.start()
-    except Exception:
-        pass
-
-    tcp_server.close()
-
-def https_service(host, post, certfile=pemfile, keyfile=keyfile):
-    from connt import HHServer
-    try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile, server_side=True)
-        ssl_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ssl_server.bind((host, post))
-        ssl_server.listen(5)
-        ssl_server.setblocking(1)
-        logging.debug('[%s:%s] Service establishment success' % (host, post))
-        while True:
+            conn, addr = server.accept()
             try:
-                conn, addr = ssl_server.accept()
-                logger = logging.getLogger('%s:%d' % ('https', conn.fileno()))
-                logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
-                thread = threading.Thread(target = HHServer, args = (conn, addr, 'https'))
+                thread = threading.Thread(target = HTServer, args = (conn, addr, 'tcp'))
                 thread.setDaemon(True)
                 thread.start()
             except Exception:
                 pass
 
     except Exception:
-        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
+        pass
 
-    ssl_server.close()
+    server.close()
+
+def https_service(host, post, certfile=pemfile, keyfile=keyfile):
+    from connt import HHServer
+    context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    try:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((host, post))
+        server.listen(5)
+        server.setblocking(1)
+        logging.debug('[%s:%d] Service establishment success' % (host, post))
+        while True:
+            news, addr = server.accept()
+            try:
+                conn = context.wrap_socket(news, server_side=True)
+                logger = logging.getLogger('%s:%d' % ('https', conn.fileno()))
+                logger.debug('New Client to: %s:%d' % (addr[0], addr[1]))
+                thread = threading.Thread(target = HHServer, args = (conn, addr, 'https'))
+                thread.setDaemon(True)
+                thread.start()
+            except Exception:
+                pass
+
+    except Exception as ex:
+        logging.error('[%s:%d] %s' % (host, post, str(ex)))
+
+    server.close()
 
 def http_service(host, post):
     from connt import HHServer
@@ -70,48 +76,50 @@ def http_service(host, post):
         server.bind((host, post))
         server.listen(5)
         server.setblocking(1)
-        logging.debug('[%s:%s] Service establishment success' % (host, post))
+        logging.debug('[%s:%d] Service establishment success' % (host, post))
         while True:
+            conn, addr = server.accept()
             try:
-                conn, addr = server.accept()
                 logger = logging.getLogger('%s:%d' % ('http', conn.fileno()))
-                logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
+                logger.debug('New Client to: %s:%d' % (addr[0], addr[1]))
                 thread = threading.Thread(target = HHServer, args = (conn, addr, 'http'))
                 thread.setDaemon(True)
                 thread.start()
             except Exception:
                 pass
 
-    except Exception:
-        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
+    except Exception as ex:
+        logging.error('[%s:%d] %s' % (host, post, str(ex)))
 
     server.close()
 
 def service(host, post, certfile=pemfile, keyfile=keyfile):
     from connt import HKServer
+    context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ssl_server = ssl.wrap_socket(server, certfile=certfile, keyfile=keyfile)
-        ssl_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ssl_server.bind((host, post))
-        ssl_server.listen(5)
-        ssl_server.setblocking(1)
-        logging.debug('[%s:%s] Service establishment success' % (host, post))
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((host, post))
+        server.listen(5)
+        server.setblocking(1)
+        logging.debug('[%s:%d] Service establishment success' % (host, post))
         while True:
+            news, addr = server.accept()
             try:
-                conn, addr = ssl_server.accept()
+                conn = context.wrap_socket(news, server_side=True)
                 logger = logging.getLogger('%s:%d' % ('service', conn.fileno()))
-                logger.debug('New Client to: %s:%s' % (addr[0], addr[1]))
+                logger.debug('New Client to: %s:%d' % (addr[0], addr[1]))
                 thread = threading.Thread(target = HKServer, args = (conn, addr, 'service'))
                 thread.setDaemon(True)
                 thread.start()
             except Exception:
                 pass
 
-    except Exception:
-        logging.error('[%s:%s] Service failed to build, port is occupied by other applications' % (host, post))
+    except Exception as ex:
+        logging.error('[%s:%d] %s' % (host, post, str(ex)))
 
-    ssl_server.close()
+    server.close()
 
 # 服务端程序初始化
 if __name__ == '__main__':

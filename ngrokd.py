@@ -95,7 +95,7 @@ def http_service(host, post):
 
 def service(host, post, certfile=pemfile, keyfile=keyfile):
     from connt import HKServer
-    context = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+    context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

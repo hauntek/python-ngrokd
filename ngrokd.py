@@ -123,9 +123,15 @@ def service(host, post, certfile=pemfile, keyfile=keyfile):
 
 # 服务端程序初始化
 if __name__ == '__main__':
-    threading.Thread(daemon=True, target = service, args = (SERVERHOST, SERVERPORT)).start() # 服务启用,SERVICE
-    threading.Thread(daemon=True, target = http_service, args = (SERVERHOST, SERVERHTTP)).start() # 服务启用,HTTP_SERVICE
-    threading.Thread(daemon=True, target = https_service, args = (SERVERHOST, SERVERHTTPS)).start() # 服务启用,HTTPS_SERVICE
+    thread = threading.Thread(target = service, args = (SERVERHOST, SERVERPORT)) # 服务启用,SERVICE
+    thread.setDaemon(True)
+    thread.start()
+    thread = threading.Thread(target = http_service, args = (SERVERHOST, SERVERHTTP)) # 服务启用,HTTP_SERVICE
+    thread.setDaemon(True)
+    thread.start()
+    thread = threading.Thread(target = https_service, args = (SERVERHOST, SERVERHTTPS)) # 服务启用,HTTPS_SERVICE
+    thread.setDaemon(True)
+    thread.start()
     while True:
         try:
             time.sleep(1)

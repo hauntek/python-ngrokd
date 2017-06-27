@@ -140,7 +140,6 @@ def HKServer(conn, addr, agre):
                     TEMP_ClientId = js['Payload']['ClientId']
                     if not (TEMP_ClientId in reglist): break
                     linkinfo = reglist[TEMP_ClientId].get()
-
                     if linkinfo == 'delete': # 等待消息队列退出
                         del reglist[TEMP_ClientId]
                         break
@@ -207,7 +206,9 @@ def HKServer(conn, addr, agre):
                                 sendpack(conn, NewTunnel(Error=Error))
                                 break
 
-                            threading.Thread(daemon=True, target = tcp_service, args = (server, rport)).start() # 服务启用,TCP_SERVICE
+                            thread = threading.Thread(target = tcp_service, args = (server, rport)) # 服务启用,TCP_SERVICE
+                            thread.setDaemon(True)
+                            thread.start()
 
                             TCPINFO = dict()
                             TCPINFO['sock'] = conn

@@ -174,6 +174,7 @@ def HKServer(conn, addr, agre):
                         if url in HOSTS:
                             Error = 'The tunnel %s is already registered.' % url
                             sendpack(conn, NewTunnel(Error=Error))
+                            conn.shutdown(socket.SHUT_WR)
                             break
                         else:
                             HOSTINFO = dict()
@@ -193,6 +194,7 @@ def HKServer(conn, addr, agre):
                         if url in TCPS:
                             Error = 'The tunnel %s is already registered.' % url
                             sendpack(conn, NewTunnel(Error=Error))
+                            conn.shutdown(socket.SHUT_WR)
                             break
                         else:
                             try:
@@ -204,6 +206,7 @@ def HKServer(conn, addr, agre):
                             except Exception:
                                 Error = 'The tunnel %s is already registered.' % url
                                 sendpack(conn, NewTunnel(Error=Error))
+                                conn.shutdown(socket.SHUT_WR)
                                 break
 
                             thread = threading.Thread(target = tcp_service, args = (server, rport)) # 服务启用,TCP_SERVICE

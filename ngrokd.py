@@ -80,7 +80,6 @@ class NgrokListenFX:
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind((self.host, self.port))
         self.server.listen(5)
-        self.server.setblocking(1)
 
     def accept(self):
         logging.debug('[%s:%d] listen port success' % (self.host, self.port))
@@ -125,21 +124,22 @@ class NgrokCommonFX:
 
                         reginfo = dict()
                         reginfo['url'] = url
-                        reginfo['sock'] = info['sock']
                         reginfo['rsock'] = conn
                         reginfo['queue'] = Queue()
 
                         self.reglist[info['clientid']].put(reginfo)
 
                         tosock = reginfo['queue'].get() # 等待队列完成
+
+                        sendpack(info['sock'], ReqProxy())
                     else:
                         pass
 
-                data = conn.recv(self.cfg.bufsize)
-                if not data: break
+                recvbut = conn.recv(self.cfg.bufsize)
+                if not recvbut: break
 
                 if tosock is not None:
-                    sendbuf(tosock, data) # 数据转发给客户端
+                    sendbuf(tosock, recvbut) # 数据转发给客户端
                     continue # 长链接
 
             except Exception:
@@ -158,11 +158,11 @@ class NgrokCommonFX:
         logger.debug('New Client to: %s:%d' % (addr[0], addr[1]))
         while True:
             try:
-                data = conn.recv(self.cfg.bufsize)
-                if not data: break
+                recvbut = conn.recv(self.cfg.bufsize)
+                if not recvbut: break
 
                 if tosock is None:
-                    heads = httphead(data.decode('utf-8'))
+                    heads = httphead(recvbut.decode('utf-8'))
                     if 'Host' in heads:
                         url = agre + '://' + heads['Host']
                         if url in self.HOSTS:
@@ -170,13 +170,14 @@ class NgrokCommonFX:
 
                             reginfo = dict()
                             reginfo['url'] = url
-                            reginfo['sock'] = info['sock']
                             reginfo['rsock'] = conn
                             reginfo['queue'] = Queue()
 
                             self.reglist[info['clientid']].put(reginfo)
 
                             tosock = reginfo['queue'].get() # 等待队列完成
+
+                            sendpack(info['sock'], ReqProxy())
                         else:
                             html = 'Tunnel %s not found' % heads['Host']
                             header = "HTTP/1.0 404 Not Foun" + "\r\n"
@@ -186,7 +187,7 @@ class NgrokCommonFX:
                             sendbuf(conn, buf.encode('utf-8'))
 
                 if tosock is not None:
-                    sendbuf(tosock, data) # 数据转发给客户端
+                    sendbuf(tosock, recvbut) # 数据转发给客户端
                     continue # 长链接
 
             except Exception:
@@ -226,6 +227,7 @@ class NgrokCommonFX:
                     if js['Type'] == 'Auth':
                         pingtime = time.time()
                         ClientId = md5(str(pingtime))
+                        self.Tunnels[ClientId] = [] # 创建渠道队列
                         self.reglist[ClientId] = Queue() # 创建消息队列
                         sendpack(conn, AuthResp(ClientId=ClientId))
                         sendpack(conn, ReqProxy())
@@ -234,7 +236,7 @@ class NgrokCommonFX:
                         TEMP_ClientId = js['Payload']['ClientId']
                         if not (TEMP_ClientId in self.reglist): break
                         linkinfo = self.reglist[TEMP_ClientId].get()
-                        if linkinfo == 'delete': # 等待消息队列退出
+                        if linkinfo == 'Closing': # 等待消息队列退出
                             del self.reglist[TEMP_ClientId]
                             break
 
@@ -246,8 +248,6 @@ class NgrokCommonFX:
                         sendpack(conn, StartProxy(url, clientaddr))
 
                         linkinfo['queue'].put(conn) # 许可队列直接转发客户端
-
-                        sendpack(linkinfo['sock'], ReqProxy())
 
                     if js['Type'] == 'ReqTunnel':
                         if js['Payload']['Protocol'] == 'http' or js['Payload']['Protocol'] == 'https':
@@ -275,10 +275,7 @@ class NgrokCommonFX:
                                 HOSTINFO['sock'] = conn
                                 HOSTINFO['clientid'] = ClientId
                                 self.HOSTS[url] = HOSTINFO
-                                if ClientId in self.Tunnels:
-                                    self.Tunnels[ClientId] += [url]
-                                else:
-                                    self.Tunnels[ClientId] = [url]
+                                self.Tunnels[ClientId].append(url)
 
                                 sendpack(conn, NewTunnel(js['Payload']['ReqId'], url, js['Payload']['Protocol']))
 
@@ -303,12 +300,9 @@ class NgrokCommonFX:
                                 TCPINFO = dict()
                                 TCPINFO['sock'] = conn
                                 TCPINFO['clientid'] = ClientId
-                                TCPINFO['tcp_server'] = ListenFX.server
+                                TCPINFO['listen_port'] = ListenFX.server
                                 self.TCPS[url] = TCPINFO
-                                if ClientId in self.Tunnels:
-                                    self.Tunnels[ClientId] += [url]
-                                else:
-                                    self.Tunnels[ClientId] = [url]
+                                self.Tunnels[ClientId].append(url)
 
                                 sendpack(conn, NewTunnel(js['Payload']['ReqId'], url, js['Payload']['Protocol']))
 
@@ -332,14 +326,14 @@ class NgrokCommonFX:
             tosock.close() # 关闭访问端链接
 
         if ClientId in self.reglist:
-            self.reglist[ClientId].put('delete')
+            self.reglist[ClientId].put('Closing')
 
         if ClientId in self.Tunnels:
             for Tunnel in self.Tunnels[ClientId]:
                 if Tunnel in self.HOSTS:
                     del self.HOSTS[Tunnel]
                 if Tunnel in self.TCPS:
-                    self.TCPS[Tunnel]['tcp_server'].close()
+                    self.TCPS[Tunnel]['listen_port'].close()
                     del self.TCPS[Tunnel]
                 logger.debug('Remove Tunnel :%s' % str(Tunnel))
             del self.Tunnels[ClientId]

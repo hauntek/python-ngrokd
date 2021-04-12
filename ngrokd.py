@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 2.7.9 或 Python 3.4.2 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: v1.42
+# Version: v1.46
 import socket
 import ssl
 import sys
@@ -300,6 +300,7 @@ class NgrokCommonFX:
                                 TCPINFO = dict()
                                 TCPINFO['sock'] = conn
                                 TCPINFO['clientid'] = ClientId
+                                TCPINFO['port'] = rport
                                 TCPINFO['listen_port'] = ListenFX.server
                                 self.TCPS[url] = TCPINFO
                                 self.Tunnels[ClientId].append(url)
@@ -333,7 +334,23 @@ class NgrokCommonFX:
                 if Tunnel in self.HOSTS:
                     del self.HOSTS[Tunnel]
                 if Tunnel in self.TCPS:
-                    self.TCPS[Tunnel]['listen_port'].close()
+                    rport = self.TCPS[Tunnel]['port']
+                    try:
+                        try:
+                            self.TCPS[Tunnel]['listen_port'].shutdown(socket.SHUT_RDWR)
+                        except Exception:
+                            pass
+
+                        try:
+                            self.TCPS[Tunnel]['listen_port'].close()
+                        except Exception:
+                            pass
+
+                        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        client.connect(('', rport))
+                    except Exception:
+                        pass
+
                     del self.TCPS[Tunnel]
                 logger.debug('Remove Tunnel :%s' % str(Tunnel))
             del self.Tunnels[ClientId]

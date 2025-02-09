@@ -148,6 +148,23 @@ class HttpTunnelHandler:
         self._send_control_message(control_conn, msg)
         return await self._wait_for_proxy_connection(req_id)
 
+    async def _wait_for_proxy_connection(self, req_id: str):
+        """等待客户端建立代理连接"""
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+
+        def on_proxy_connected(conn: socket.socket):
+            if not future.done():
+                future.set_result(conn)
+
+        # 模拟等待客户端连接（实际实现需要与客户端协议配合）
+        await asyncio.sleep(1)  # 模拟等待
+        proxy_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        proxy_conn.connect(('localhost', 12345))  # 模拟连接
+        on_proxy_connected(proxy_conn)
+
+        return await future
+
     def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
         """发送控制消息"""
         try:
@@ -246,10 +263,20 @@ class TcpTunnelHandler:
                 'ClientAddr': 'remote'
             }
         }
-        self.send_control_message(control_conn, msg)
+        self._send_control_message(control_conn, msg)
         return self.wait_for_proxy_connection(req_id, timeout=30)
 
-    def send_control_message(self, conn: ssl.SSLSocket, msg: dict):
+    def wait_for_proxy_connection(self, req_id: str, timeout: int) -> socket.socket:
+        """等待客户端建立代理连接"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            with self.lock:
+                if req_id in self.tunnel_mgr.tunnels:
+                    return self.tunnel_mgr.tunnels[req_id]['proxy_conn']
+            time.sleep(0.1)
+        raise TimeoutError("等待代理连接超时")
+
+    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
         """发送控制消息"""
         try:
             data = json.dumps(msg).encode()

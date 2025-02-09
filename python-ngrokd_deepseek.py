@@ -246,8 +246,17 @@ class TcpTunnelHandler:
                 'ClientAddr': 'remote'
             }
         }
-        self.send_control_message(control_conn, msg)
+        self._send_control_message(control_conn, msg)
         return self.wait_for_proxy_connection(req_id, timeout=30)
+
+    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
+        """发送控制消息"""
+        try:
+            data = json.dumps(msg).encode()
+            header = struct.pack('<II', len(data), 0)
+            conn.send(header + data)
+        except ssl.SSLWantWriteError:
+            pass
 
     def bridge_connections(self, client_conn: socket.socket, proxy_conn: socket.socket):
         """桥接两个TCP连接"""
@@ -284,9 +293,9 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'http_port': 80,
             'https_port': 443,
             'control_port': 4443,  # 控制端口
-            'ssl_cert': 'snakeoil.crt',
-            'ssl_key': 'snakeoil.key',
-            'domain': 'ngrok.com', # 服务域名
+            'ssl_cert': 'server.crt',
+            'ssl_key': 'server.key',
+            'domain': 'ngrok.io',  # 服务域名
             'bufsize': 1024,       # 缓冲区大小
             'heartbeat_timeout': 30
         }

@@ -88,10 +88,11 @@ class TunnelManager:
 
 class HttpTunnelHandler:
     """处理HTTP/HTTPS请求转发"""
-    def __init__(self, tunnel_mgr: TunnelManager, ssl_cert: str, ssl_key: str):
+    def __init__(self, tunnel_mgr: TunnelManager, ssl_cert: str, ssl_key: str, bufsize: int):
         self.tunnel_mgr = tunnel_mgr
         self.ssl_cert = ssl_cert
         self.ssl_key = ssl_key
+        self.bufsize = bufsize
         self.executor = ThreadPoolExecutor(max_workers=100)
         self.ssl_ctx = self._create_ssl_context()
 
@@ -158,7 +159,7 @@ class HttpTunnelHandler:
         async def forward(src, dst):
             try:
                 while True:
-                    data = await src.read(4096)
+                    data = await src.read(self.bufsize)
                     if not data:
                         break
                     dst.send(data)
@@ -172,8 +173,9 @@ class HttpTunnelHandler:
 
 class TcpTunnelHandler:
     """处理TCP隧道转发"""
-    def __init__(self, tunnel_mgr: TunnelManager):
+    def __init__(self, tunnel_mgr: TunnelManager, bufsize: int):
         self.tunnel_mgr = tunnel_mgr
+        self.bufsize = bufsize
         self.listeners: Dict[int, socket.socket] = {}
         self.executor = ThreadPoolExecutor(max_workers=100)
         self.lock = threading.RLock()
@@ -249,7 +251,7 @@ class TcpTunnelHandler:
         def forward(src, dst):
             try:
                 while True:
-                    data = src.recv(4096)
+                    data = src.recv(self.bufsize)
                     if not data:
                         break
                     dst.send(data)
@@ -282,10 +284,16 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'ssl_cert': 'server.crt',
             'ssl_key': 'server.key',
             'domain': 'ngrok.io',  # 服务域名
+            'bufsize': 1024,  # 缓冲区大小
             'heartbeat_timeout': 30
         }
         self.tunnel_mgr = TunnelManager(self.config['domain'])
-        super().__init__(self.tunnel_mgr, self.config['ssl_cert'], self.config['ssl_key'])
+        super().__init__(
+            self.tunnel_mgr, 
+            self.config['ssl_cert'], 
+            self.config['ssl_key'], 
+            self.config['bufsize']
+        )
 
     def start_control_service(self):
         """启动4443端口的控制服务"""
@@ -333,7 +341,7 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
 
                 # 接收数据
                 try:
-                    data = conn.recv(4096)
+                    data = conn.recv(self.config['bufsize'])
                     if not data:
                         break
                     buffer += data

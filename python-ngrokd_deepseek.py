@@ -22,7 +22,8 @@ logger = logging.getLogger('ngrokd')
 
 class TunnelManager:
     """管理所有隧道和客户端连接"""
-    def __init__(self):
+    def __init__(self, domain: str):
+        self.domain = domain  # 服务域名
         self.tunnels: Dict[str, dict] = {}  # client_id: tunnel_info
         self.conn_map: Dict[str, ssl.SSLSocket] = {}  # client_id: control_conn
         self.host_map: Dict[str, str] = {}  # hostname: client_id
@@ -60,10 +61,14 @@ class TunnelManager:
         """生成隧道URL"""
         if tunnel_type == 'http':
             if config['Subdomain']:
-                return f"http://{config['Subdomain']}.ngrok.io"
-            return f"http://{config['Hostname']}" if config['Hostname'] else f"http://{secrets.token_hex(8)}.ngrok.io"
+                return f"http://{config['Subdomain']}.{self.domain}"
+            return f"http://{config['Hostname']}" if config['Hostname'] else f"http://{secrets.token_hex(8)}.{self.domain}"
+        elif tunnel_type == 'https':
+            if config['Subdomain']:
+                return f"https://{config['Subdomain']}.{self.domain}"
+            return f"https://{config['Hostname']}" if config['Hostname'] else f"https://{secrets.token_hex(8)}.{self.domain}"
         elif tunnel_type == 'tcp':
-            return f"tcp://ngrok.io:{config['RemotePort']}"
+            return f"tcp://{self.domain}:{config['RemotePort']}"
         else:
             raise ValueError(f"Unsupported tunnel type: {tunnel_type}")
 
@@ -83,15 +88,17 @@ class TunnelManager:
 
 class HttpTunnelHandler:
     """处理HTTP/HTTPS请求转发"""
-    def __init__(self, tunnel_mgr: TunnelManager):
+    def __init__(self, tunnel_mgr: TunnelManager, ssl_cert: str, ssl_key: str):
         self.tunnel_mgr = tunnel_mgr
+        self.ssl_cert = ssl_cert
+        self.ssl_key = ssl_key
         self.executor = ThreadPoolExecutor(max_workers=100)
         self.ssl_ctx = self._create_ssl_context()
 
     def _create_ssl_context(self):
         """创建SSL上下文"""
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ctx.load_cert_chain(certfile='server.crt', keyfile='server.key')
+        ctx.load_cert_chain(certfile=self.ssl_cert, keyfile=self.ssl_key)
         return ctx
 
     async def handle_http_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -230,7 +237,7 @@ class TcpTunnelHandler:
             'Type': 'StartProxy',
             'Payload': {
                 'ReqId': req_id,
-                'Url': f"tcp://ngrok.io:{remote_port}",
+                'Url': f"tcp://{self.tunnel_mgr.domain}:{remote_port}",
                 'ClientAddr': 'remote'
             }
         }
@@ -274,10 +281,11 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'control_port': 4443,  # 控制端口
             'ssl_cert': 'server.crt',
             'ssl_key': 'server.key',
+            'domain': 'ngrok.io',  # 服务域名
             'heartbeat_timeout': 30
         }
-        self.tunnel_mgr = TunnelManager()
-        super().__init__(self.tunnel_mgr)
+        self.tunnel_mgr = TunnelManager(self.config['domain'])
+        super().__init__(self.tunnel_mgr, self.config['ssl_cert'], self.config['ssl_key'])
 
     def start_control_service(self):
         """启动4443端口的控制服务"""

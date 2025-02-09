@@ -218,7 +218,7 @@ class TcpTunnelHandler:
                         try:
                             client_conn, addr = sock.accept()
                             self.executor.submit(
-                                self.handle_tcp_connection, 
+                                self._handle_tcp_connection, 
                                 client_conn, 
                                 port
                             )
@@ -229,7 +229,7 @@ class TcpTunnelHandler:
             thread.start()
             return thread
 
-    def handle_tcp_connection(self, client_conn: socket.socket, remote_port: int):
+    def _handle_tcp_connection(self, client_conn: socket.socket, remote_port: int):
         """处理TCP连接请求"""
         try:
             with self.lock:
@@ -244,15 +244,15 @@ class TcpTunnelHandler:
                     client_conn.close()
                     return
 
-            proxy_conn = self.create_proxy_channel(control_conn, remote_port)
-            self.bridge_connections(client_conn, proxy_conn)
+            proxy_conn = self._create_proxy_channel(control_conn, remote_port)
+            self._bridge_connections(client_conn, proxy_conn)
             
         except Exception as e:
             logger.error(f"TCP处理错误: {str(e)}")
         finally:
             client_conn.close()
 
-    def create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int) -> socket.socket:
+    def _create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int) -> socket.socket:
         """通过控制连接建立代理通道"""
         req_id = secrets.token_hex(4)
         msg = {
@@ -264,9 +264,9 @@ class TcpTunnelHandler:
             }
         }
         self._send_control_message(control_conn, msg)
-        return self.wait_for_proxy_connection(req_id, timeout=30)
+        return self._wait_for_proxy_connection(req_id, timeout=30)
 
-    def wait_for_proxy_connection(self, req_id: str, timeout: int) -> socket.socket:
+    def _wait_for_proxy_connection(self, req_id: str, timeout: int) -> socket.socket:
         """等待客户端建立代理连接"""
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -285,7 +285,7 @@ class TcpTunnelHandler:
         except ssl.SSLWantWriteError:
             pass
 
-    def bridge_connections(self, client_conn: socket.socket, proxy_conn: socket.socket):
+    def _bridge_connections(self, client_conn: socket.socket, proxy_conn: socket.socket):
         """桥接两个TCP连接"""
         def forward(src, dst):
             try:

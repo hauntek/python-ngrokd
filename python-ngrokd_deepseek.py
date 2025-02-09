@@ -142,12 +142,14 @@ class HttpTunnelHandler:
     async def _create_proxy_connection(self, control_conn: ssl.SSLSocket, host: str):
         """通过控制连接建立代理通道"""
         req_id = secrets.token_hex(4)
+        sockinfo = control_conn.getpeername()
+        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
         msg = {
             'Type': 'StartProxy',
             'Payload': {
                 'ReqId': req_id,
                 'Url': f"http://{host}",
-                'ClientAddr': 'remote'
+                'ClientAddr': clientaddr
             }
         }
         self._send_control_message(control_conn, msg)
@@ -249,7 +251,7 @@ class TcpTunnelHandler:
                     client_conn.close()
                     return
 
-            proxy_conn = self._create_proxy_channel(control_conn, remote_port, client_conn.getpeername())
+            proxy_conn = self._create_proxy_channel(control_conn, remote_port)
             self._bridge_connections(client_conn, proxy_conn)
             
         except Exception as e:
@@ -257,16 +259,17 @@ class TcpTunnelHandler:
         finally:
             client_conn.close()
 
-    def _create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int, client_addr: tuple) -> socket.socket:
+    def _create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int) -> socket.socket:
         """通过控制连接建立代理通道"""
         req_id = secrets.token_hex(4)
-        client_ip, client_port = client_addr
+        sockinfo = control_conn.getpeername()
+        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
         msg = {
             'Type': 'StartProxy',
             'Payload': {
                 'ReqId': req_id,
                 'Url': f"tcp://{self.tunnel_mgr.domain}:{remote_port}",
-                'ClientAddr': f"{client_ip}:{client_port}"  # 获取对方IP和端口
+                'ClientAddr': clientaddr
             }
         }
         self._send_control_message(control_conn, msg)

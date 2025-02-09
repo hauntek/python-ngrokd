@@ -284,9 +284,9 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'http_port': 80,
             'https_port': 443,
             'control_port': 4443,  # 控制端口
-            'ssl_cert': 'server.crt',
-            'ssl_key': 'server.key',
-            'domain': 'ngrok.io',  # 服务域名
+            'ssl_cert': 'snakeoil.crt',
+            'ssl_key': 'snakeoil.key',
+            'domain': 'ngrok.com', # 服务域名
             'bufsize': 1024,       # 缓冲区大小
             'heartbeat_timeout': 30
         }

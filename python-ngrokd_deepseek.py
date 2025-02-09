@@ -265,43 +265,185 @@ class TcpTunnelHandler:
         ).start()
 
 class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
-    """集成HTTP和TCP功能的服务端"""
+    """集成所有服务的完整服务端"""
     def __init__(self):
         self.config = {
-            'host': '',
+            'host': '0.0.0.0',
             'http_port': 80,
             'https_port': 443,
-            'control_port': 4443,
+            'control_port': 4443,  # 控制端口
             'ssl_cert': 'server.crt',
             'ssl_key': 'server.key',
-            'max_workers': 100,
             'heartbeat_timeout': 30
         }
         self.tunnel_mgr = TunnelManager()
         super().__init__(self.tunnel_mgr)
 
+    def start_control_service(self):
+        """启动4443端口的控制服务"""
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(
+            certfile=self.config['ssl_cert'],
+            keyfile=self.config['ssl_key']
+        )
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.config['host'], self.config['control_port']))
+            sock.listen(100)
+            logger.info(f"控制服务已启动，监听端口：{self.config['control_port']}")
+            
+            while True:
+                try:
+                    conn, addr = sock.accept()
+                    ssl_conn = context.wrap_socket(conn, server_side=True)
+                    client_id = secrets.token_hex(16)
+                    threading.Thread(
+                        target=self.handle_control_connection,
+                        args=(ssl_conn, client_id),
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    logger.error(f"接受控制连接失败: {str(e)}")
+
+    def handle_control_connection(self, conn: ssl.SSLSocket, client_id: str):
+        """处理控制连接"""
+        logger = logging.getLogger(f"Control:{client_id[:8]}")
+        buffer = b''
+        last_active = time.time()
+        
+        try:
+            # 将客户端添加到连接映射
+            with self.tunnel_mgr.lock:
+                self.tunnel_mgr.conn_map[client_id] = conn
+
+            while True:
+                # 心跳检查
+                if time.time() - last_active > self.config['heartbeat_timeout']:
+                    logger.warning("心跳超时，断开连接")
+                    break
+
+                # 接收数据
+                try:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    buffer += data
+                except ssl.SSLWantReadError:
+                    time.sleep(0.1)
+                    continue
+
+                # 处理完整消息
+                while len(buffer) >= 8:
+                    msg_len = struct.unpack('<I', buffer[:4])[0]
+                    if len(buffer) < msg_len + 8:
+                        break
+
+                    msg_data = buffer[8:8+msg_len]
+                    buffer = buffer[8+msg_len:]
+                    last_active = time.time()
+
+                    try:
+                        msg = json.loads(msg_data.decode())
+                        self.process_control_message(conn, client_id, msg)
+                    except json.JSONDecodeError:
+                        logger.error("无效消息格式")
+
+        except Exception as e:
+            logger.error(f"控制连接异常: {str(e)}")
+        finally:
+            self.tunnel_mgr.unregister_client(client_id)
+            conn.close()
+            logger.info("控制连接关闭")
+
+    def process_control_message(self, conn: ssl.SSLSocket, client_id: str, msg: dict):
+        """处理控制消息"""
+        msg_type = msg.get('Type')
+        payload = msg.get('Payload', {})
+
+        logger.debug(f"收到控制消息: {msg_type}")
+
+        if msg_type == 'Auth':
+            self.send_response(conn, {
+                'Type': 'AuthResp',
+                'Payload': {
+                    'ClientId': client_id,
+                    'Version': '2',
+                    'MmVersion': '1.7'
+                }
+            })
+            logger.info(f"客户端认证成功: {client_id}")
+
+        elif msg_type == 'ReqTunnel':
+            try:
+                tunnel_type = payload['Protocol']
+                config = {
+                    'Hostname': payload.get('Hostname', ''),
+                    'Subdomain': payload.get('Subdomain', ''),
+                    'RemotePort': payload.get('RemotePort', 0)
+                }
+                
+                tunnel_info = self.tunnel_mgr.register_tunnel(client_id, tunnel_type, config)
+                
+                self.send_response(conn, {
+                    'Type': 'NewTunnel',
+                    'Payload': {
+                        'ReqId': payload['ReqId'],
+                        'Url': tunnel_info['url'],
+                        'Protocol': tunnel_type,
+                        'Error': ''
+                    }
+                })
+                logger.info(f"隧道已建立: {tunnel_info['url']}")
+
+                # 如果是TCP隧道，启动监听
+                if tunnel_type == 'tcp':
+                    self.start_tcp_listener(tunnel_info['config']['RemotePort'])
+
+            except Exception as e:
+                self.send_response(conn, {
+                    'Type': 'NewTunnel',
+                    'Payload': {
+                        'ReqId': payload['ReqId'],
+                        'Error': str(e)
+                    }
+                })
+                logger.error(f"隧道创建失败: {str(e)}")
+
+        elif msg_type == 'Ping':
+            self.send_response(conn, {'Type': 'Pong'})
+
+    def send_response(self, conn: ssl.SSLSocket, data: dict):
+        """发送响应消息"""
+        try:
+            msg = json.dumps(data).encode()
+            header = struct.pack('<II', len(msg), 0)
+            conn.send(header + msg)
+        except Exception as e:
+            logger.error(f"发送响应失败: {str(e)}")
+
     def run(self):
         """启动所有服务"""
+        # 启动控制服务（4443端口）
+        control_thread = threading.Thread(
+            target=self.start_control_service,
+            daemon=True
+        )
+        control_thread.start()
+
+        # 启动HTTP/HTTPS服务
         loop = asyncio.get_event_loop()
-        
-        # 启动HTTP服务
         loop.run_until_complete(asyncio.start_server(
             self.handle_http_request,
             host=self.config['host'],
             port=self.config['http_port']
         ))
-        
-        # 启动HTTPS服务
         loop.run_until_complete(asyncio.start_server(
             self.handle_http_request,
             host=self.config['host'],
             port=self.config['https_port'],
             ssl=self.ssl_ctx
         ))
-        
-        # 启动控制服务
-        control_thread = threading.Thread(target=self.start_control_service)
-        control_thread.start()
 
         try:
             loop.run_forever()

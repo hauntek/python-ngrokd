@@ -18,7 +18,7 @@ ngrokd.py 配置后,直接运行即可.
 
 1.由人工智能优化代码（DeepSeek v3）
 
-2.运行环境需Python 3.12.0 以上[`python-ngrok_gevent.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py.py)
+2.运行环境需Python 3.12.0 以上[`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py.py)
 
 ***
 

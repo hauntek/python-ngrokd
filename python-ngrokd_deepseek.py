@@ -246,10 +246,10 @@ class TcpTunnelHandler:
                 'ClientAddr': 'remote'
             }
         }
-        self._send_control_message(control_conn, msg)
+        self.send_control_message(control_conn, msg)
         return self.wait_for_proxy_connection(req_id, timeout=30)
 
-    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
+    def send_control_message(self, conn: ssl.SSLSocket, msg: dict):
         """发送控制消息"""
         try:
             data = json.dumps(msg).encode()

@@ -1,213 +1,314 @@
-import json
-import struct
 import socket
 import ssl
 import sys
+import json
+import struct
 import time
 import logging
 import threading
-import random
-import hashlib
-from queue import Queue
+import secrets
+import asyncio
+from collections import deque, defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Tuple, Optional, List, Deque
 
+# 配置日志
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
     datefmt='%Y/%m/%d %H:%M:%S'
 )
+logger = logging.getLogger('ngrokd')
 
-# --------------------------
-# 协议消息构造优化
-# --------------------------
-def create_message(msg_type, payload=None, **kwargs):
-    """通用消息构造函数"""
-    message = {'Type': msg_type}
-    if payload is None:
-        payload = kwargs
-    if payload:
-        message['Payload'] = payload
-    return json.dumps(message)
+class TunnelManager:
+    """管理所有隧道和客户端连接"""
+    def __init__(self):
+        self.tunnels: Dict[str, dict] = {}  # client_id: tunnel_info
+        self.conn_map: Dict[str, ssl.SSLSocket] = {}  # client_id: control_conn
+        self.host_map: Dict[str, str] = {}  # hostname: client_id
+        self.subdomain_map: Dict[str, str] = {}  # subdomain: client_id
+        self.tcp_map: Dict[int, str] = {}  # remote_port: client_id
+        self.port_pool = deque(range(10000, 60000))  # 可用端口池
+        self.lock = threading.RLock()
 
-# 特定消息类型快捷方法
-AuthResp = lambda **kw: create_message('AuthResp', **kw)
-NewTunnel = lambda **kw: create_message('NewTunnel', **kw)
-ReqProxy = lambda: create_message('ReqProxy')
-StartProxy = lambda **kw: create_message('StartProxy', **kw)
-Pong = lambda: create_message('Pong')
+    def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
+        """注册新隧道"""
+        with self.lock:
+            url = self._generate_url(tunnel_type, config)
+            
+            if tunnel_type == 'tcp':
+                if config['RemotePort'] == 0:
+                    if not self.port_pool:
+                        raise ValueError("No available ports")
+                    config['RemotePort'] = self.port_pool.popleft()
+                elif config['RemotePort'] in self.tcp_map:
+                    raise ValueError(f"Port {config['RemotePort']} already in use")
+                self.tcp_map[config['RemotePort']] = client_id
+            
+            tunnel_info = {
+                'client_id': client_id,
+                'type': tunnel_type,
+                'url': url,
+                'config': config,
+                'created_at': time.time(),
+                'last_active': time.time()
+            }
+            self.tunnels[url] = tunnel_info
+            return tunnel_info
 
-# --------------------------
-# 网络工具函数优化
-# --------------------------
-def lentobyte(length):
-    """封装长度打包逻辑"""
-    return struct.pack('<LL', length, 0)
+    def _generate_url(self, tunnel_type: str, config: dict) -> str:
+        """生成隧道URL"""
+        if tunnel_type == 'http':
+            if config['Subdomain']:
+                return f"http://{config['Subdomain']}.ngrok.io"
+            return f"http://{config['Hostname']}" if config['Hostname'] else f"http://{secrets.token_hex(8)}.ngrok.io"
+        elif tunnel_type == 'tcp':
+            return f"tcp://ngrok.io:{config['RemotePort']}"
+        else:
+            raise ValueError(f"Unsupported tunnel type: {tunnel_type}")
 
-def sendpack(sock, msg, isblock=False):
-    """优化后的数据包发送"""
-    try:
-        if isblock:
-            sock.setblocking(True)
-        
-        # 先发送长度头
-        header = lentobyte(len(msg))
-        sock.sendall(header)
-        
-        # 发送消息体
-        sock.sendall(msg.encode('utf-8'))
-    finally:
-        if isblock:
-            sock.setblocking(False)
+    def unregister_client(self, client_id: str):
+        """注销客户端所有隧道"""
+        with self.lock:
+            to_remove = [url for url, info in self.tunnels.items() if info['client_id'] == client_id]
+            for url in to_remove:
+                if self.tunnels[url]['type'] == 'tcp':
+                    port = self.tunnels[url]['config']['RemotePort']
+                    self.port_pool.append(port)
+                    del self.tcp_map[port]
+                del self.tunnels[url]
+            
+            if client_id in self.conn_map:
+                del self.conn_map[client_id]
 
-def tolen(header_bytes):
-    """优化长度解析"""
-    if len(header_bytes) == 8:
-        return struct.unpack('<I', header_bytes[:4])[0]
-    return 0
+class HttpTunnelHandler:
+    """处理HTTP/HTTPS请求转发"""
+    def __init__(self, tunnel_mgr: TunnelManager):
+        self.tunnel_mgr = tunnel_mgr
+        self.executor = ThreadPoolExecutor(max_workers=100)
+        self.ssl_ctx = self._create_ssl_context()
 
-# --------------------------
-# 工具函数优化
-# --------------------------
-def get_rand_char(length):
-    """生成随机字符串"""
-    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"
-    return ''.join(random.choices(chars, k=length))
+    def _create_ssl_context(self):
+        """创建SSL上下文"""
+        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(certfile='server.crt', keyfile='server.key')
+        return ctx
 
-def md5_hash(s):
-    """MD5哈希函数"""
-    return hashlib.md5(s.encode('utf-8')).hexdigest().lower()
+    async def handle_http_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        """处理HTTP请求"""
+        try:
+            header = await reader.readuntil(b'\r\n\r\n')
+            headers = self._parse_headers(header.decode())
+            host = headers.get('Host', '')
+            
+            with self.tunnel_mgr.lock:
+                if host not in self.tunnel_mgr.host_map:
+                    writer.write(b'HTTP/1.1 404 Not Found\r\n\r\n')
+                    await writer.drain()
+                    return
+                
+                client_id = self.tunnel_mgr.host_map[host]
+                control_conn = self.tunnel_mgr.conn_map.get(client_id)
+                
+                if not control_conn:
+                    writer.write(b'HTTP/1.1 503 Service Unavailable\r\n\r\n')
+                    await writer.drain()
+                    return
 
-def parse_http_header(request):
-    """优化HTTP头解析"""
-    try:
-        header_part, _, data = request.partition('\r\n\r\n')
-        headers = {}
-        for line in header_part.split('\r\n')[1:]:
-            if ': ' in line:
-                key, value = line.split(': ', 1)
-                headers[key] = value
-        return headers, data
-    except Exception as e:
-        logging.error(f"Error parsing HTTP header: {str(e)}")
-        return {}, ''
+            proxy_conn = await self._create_proxy_connection(control_conn, host)
+            await self._bridge_connections(reader, writer, proxy_conn)
+            
+        except Exception as e:
+            logger.error(f"HTTP处理错误: {str(e)}")
+        finally:
+            writer.close()
 
-# --------------------------
-# Socket监听器类优化
-# --------------------------
-class SocketListener:
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-        self.ssl_context = None
-        self.server_socket = None
+    async def _create_proxy_connection(self, control_conn: ssl.SSLSocket, host: str):
+        """通过控制连接建立代理通道"""
+        req_id = secrets.token_hex(4)
+        msg = {
+            'Type': 'StartProxy',
+            'Payload': {
+                'ReqId': req_id,
+                'Url': f"http://{host}",
+                'ClientAddr': 'remote'
+            }
+        }
+        self._send_control_message(control_conn, msg)
+        return await self._wait_for_proxy_connection(req_id)
 
-    def set_ssl(self, certfile, keyfile):
-        """配置SSL"""
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-        self.ssl_context = context
+    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
+        """发送控制消息"""
+        try:
+            data = json.dumps(msg).encode()
+            header = struct.pack('<II', len(data), 0)
+            conn.send(header + data)
+        except ssl.SSLWantWriteError:
+            pass
 
-    def start(self, handler, protocol_name):
-        """启动监听线程"""
-        self._create_socket()
+    async def _bridge_connections(self, client_reader, client_writer, proxy_conn):
+        """桥接客户端和代理连接"""
+        async def forward(src, dst):
+            try:
+                while True:
+                    data = await src.read(4096)
+                    if not data:
+                        break
+                    dst.send(data)
+            except:
+                pass
+
+        await asyncio.gather(
+            forward(client_reader, proxy_conn),
+            forward(proxy_conn, client_writer)
+        )
+
+class TcpTunnelHandler:
+    """处理TCP隧道转发"""
+    def __init__(self, tunnel_mgr: TunnelManager):
+        self.tunnel_mgr = tunnel_mgr
+        self.listeners: Dict[int, socket.socket] = {}
+        self.executor = ThreadPoolExecutor(max_workers=100)
+        self.lock = threading.RLock()
+
+    def start_tcp_listener(self, port: int):
+        """启动TCP端口监听"""
+        with self.lock:
+            if port in self.listeners:
+                raise ValueError(f"Port {port} already in use")
+            
+            def _listen():
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind((self.tunnel_mgr.config['host'], port))
+                    sock.listen(100)
+                    self.listeners[port] = sock
+                    logger.info(f"TCP监听已启动 port:{port}")
+                    
+                    while True:
+                        try:
+                            client_conn, addr = sock.accept()
+                            self.executor.submit(
+                                self.handle_tcp_connection, 
+                                client_conn, 
+                                port
+                            )
+                        except OSError:
+                            break
+
+            thread = threading.Thread(target=_listen, daemon=True)
+            thread.start()
+            return thread
+
+    def handle_tcp_connection(self, client_conn: socket.socket, remote_port: int):
+        """处理TCP连接请求"""
+        try:
+            with self.lock:
+                if remote_port not in self.tunnel_mgr.tcp_map:
+                    client_conn.close()
+                    return
+                
+                client_id = self.tunnel_mgr.tcp_map[remote_port]
+                control_conn = self.tunnel_mgr.conn_map.get(client_id)
+                
+                if not control_conn:
+                    client_conn.close()
+                    return
+
+            proxy_conn = self.create_proxy_channel(control_conn, remote_port)
+            self.bridge_connections(client_conn, proxy_conn)
+            
+        except Exception as e:
+            logger.error(f"TCP处理错误: {str(e)}")
+        finally:
+            client_conn.close()
+
+    def create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int) -> socket.socket:
+        """通过控制连接建立代理通道"""
+        req_id = secrets.token_hex(4)
+        msg = {
+            'Type': 'StartProxy',
+            'Payload': {
+                'ReqId': req_id,
+                'Url': f"tcp://ngrok.io:{remote_port}",
+                'ClientAddr': 'remote'
+            }
+        }
+        self.send_control_message(control_conn, msg)
+        return self.wait_for_proxy_connection(req_id, timeout=30)
+
+    def bridge_connections(self, client_conn: socket.socket, proxy_conn: socket.socket):
+        """桥接两个TCP连接"""
+        def forward(src, dst):
+            try:
+                while True:
+                    data = src.recv(4096)
+                    if not data:
+                        break
+                    dst.send(data)
+            except ConnectionResetError:
+                pass
+            finally:
+                src.close()
+                dst.close()
+
         threading.Thread(
-            target=self._accept_connections,
-            args=(handler, protocol_name),
+            target=forward, 
+            args=(client_conn, proxy_conn),
+            daemon=True
+        ).start()
+        
+        threading.Thread(
+            target=forward, 
+            args=(proxy_conn, client_conn),
             daemon=True
         ).start()
 
-    def _create_socket(self):
-        """创建并绑定socket"""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(5)
-        logging.info(f"Listening on {self.host}:{self.port}")
-
-    def _accept_connections(self, handler, protocol_name):
-        """接受连接并处理"""
-        try:
-            while True:
-                conn, addr = self.server_socket.accept()
-                try:
-                    if self.ssl_context:
-                        conn = self.ssl_context.wrap_socket(conn, server_side=True)
-                    threading.Thread(
-                        target=handler,
-                        args=(conn, addr, protocol_name),
-                        daemon=True
-                    ).start()
-                except Exception as e:
-                    logging.error(f"Connection error: {str(e)}")
-        finally:
-            self.server_socket.close()
-
-# --------------------------
-# 主服务类优化
-# --------------------------
-class NgrokServer:
-    def __init__(self, config):
-        self.config = config
-        self.tunnels = {}
-        self.host_mappings = {}
-        self.tcp_mappings = {}
-        self.registration_queues = {}
-
-    def run_service(self):
-        """启动所有服务"""
-        services = [
-            (self.config.http_port, False, 'http'),
-            (self.config.https_port, True, 'https'),
-            (self.config.control_port, True, 'control')
-        ]
-        
-        for port, use_ssl, name in services:
-            listener = SocketListener(self.config.host, port)
-            if use_ssl:
-                listener.set_ssl(self.config.cert_file, self.config.key_file)
-            listener.start(
-                self.handle_control_connection if name == 'control' else self.handle_proxy_connection,
-                name
-            )
-
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logging.info("Server shutdown requested")
-
-    def handle_proxy_connection(self, conn, addr, protocol):
-        """处理代理连接"""
-        logger = logging.getLogger(f'{protocol}:{conn.fileno()}')
-        logger.debug(f"New connection from {addr}")
-        
-        try:
-            # 处理逻辑...
-            pass
-        except Exception as e:
-            logger.error(f"Connection error: {str(e)}")
-        finally:
-            conn.close()
-
-    def handle_control_connection(self, conn, addr, protocol):
-        """处理控制连接"""
-        # 完整处理逻辑...
-        pass
-
-# --------------------------
-# 配置类和主程序入口
-# --------------------------
-class ServerConfig:
+class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
+    """集成HTTP和TCP功能的服务端"""
     def __init__(self):
-        self.host = ''
-        self.http_port = 80
-        self.https_port = 443
-        self.control_port = 4443
-        self.domain = 'ngrok.example.com'
-        self.cert_file = 'server.crt'
-        self.key_file = 'server.key'
-        self.buffer_size = 4096
+        self.config = {
+            'host': '',
+            'http_port': 80,
+            'https_port': 443,
+            'control_port': 4443,
+            'ssl_cert': 'server.crt',
+            'ssl_key': 'server.key',
+            'max_workers': 100,
+            'heartbeat_timeout': 30
+        }
+        self.tunnel_mgr = TunnelManager()
+        super().__init__(self.tunnel_mgr)
+
+    def run(self):
+        """启动所有服务"""
+        loop = asyncio.get_event_loop()
+        
+        # 启动HTTP服务
+        loop.run_until_complete(asyncio.start_server(
+            self.handle_http_request,
+            host=self.config['host'],
+            port=self.config['http_port']
+        ))
+        
+        # 启动HTTPS服务
+        loop.run_until_complete(asyncio.start_server(
+            self.handle_http_request,
+            host=self.config['host'],
+            port=self.config['https_port'],
+            ssl=self.ssl_ctx
+        ))
+        
+        # 启动控制服务
+        control_thread = threading.Thread(target=self.start_control_service)
+        control_thread.start()
+
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            logger.info("正在关闭服务器...")
+            loop.close()
 
 if __name__ == '__main__':
-    config = ServerConfig()
-    server = NgrokServer(config)
-    server.run_service()
+    server = TunnelServer()
+    server.run()

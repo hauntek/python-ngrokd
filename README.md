@@ -12,6 +12,16 @@ ngrokd.py 配置后,直接运行即可.
 # 温馨提示
 如果有小伙伴不想依赖环境运行，不妨可以试下PyInstaller，把py编译成可执行文件。
 
+## 更新日记 v2.0(2025/02/10)
+
+***
+
+1.由人工智能优化代码（DeepSeek v3）
+
+2.运行环境需Python 3.12.0 以上[`python-ngrok_gevent.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py.py)
+
+***
+
 ## 更新日记 v1.46(2021/04/13)
 
 ***

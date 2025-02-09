@@ -33,10 +33,13 @@ class TunnelManager:
         self.lock = threading.RLock()
 
     def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
-        """注册新隧道"""
+        """注册新隧道（添加重复检查）"""
         with self.lock:
+            # 生成URL前先检查是否已存在
             url = self._generate_url(tunnel_type, config)
-            
+            if url in self.tunnels:
+                raise ValueError(f"Tunnel {url} already registered")
+
             if tunnel_type == 'tcp':
                 if config['RemotePort'] == 0:
                     if not self.port_pool:
@@ -178,11 +181,11 @@ class TcpTunnelHandler:
         self.bufsize = bufsize
         self.listeners: Dict[int, socket.socket] = {}
         self.executor = ThreadPoolExecutor(max_workers=100)
-        self.lock = threading.RLock()
+        self.lock = threading.RLock()  # 显式初始化锁
 
     def start_tcp_listener(self, port: int):
         """启动TCP端口监听"""
-        with self.lock:
+        with self.lock:  # 使用初始化好的锁
             if port in self.listeners:
                 raise ValueError(f"Port {port} already in use")
             
@@ -284,14 +287,21 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'ssl_cert': 'server.crt',
             'ssl_key': 'server.key',
             'domain': 'ngrok.io',  # 服务域名
-            'bufsize': 1024,  # 缓冲区大小
+            'bufsize': 1024,       # 缓冲区大小
             'heartbeat_timeout': 30
         }
         self.tunnel_mgr = TunnelManager(self.config['domain'])
-        super().__init__(
+        # 显式初始化父类
+        HttpTunnelHandler.__init__(
+            self, 
             self.tunnel_mgr, 
             self.config['ssl_cert'], 
             self.config['ssl_key'], 
+            self.config['bufsize']
+        )
+        TcpTunnelHandler.__init__(
+            self,
+            self.tunnel_mgr,
             self.config['bufsize']
         )
 
@@ -373,7 +383,7 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             logger.info("控制连接关闭")
 
     def process_control_message(self, conn: ssl.SSLSocket, client_id: str, msg: dict):
-        """处理控制消息"""
+        """处理控制消息（增强隧道注册检查）"""
         msg_type = msg.get('Type')
         payload = msg.get('Payload', {})
 
@@ -399,6 +409,11 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
                     'RemotePort': payload.get('RemotePort', 0)
                 }
                 
+                # 检查隧道是否已存在
+                tentative_url = self.tunnel_mgr._generate_url(tunnel_type, config)
+                if tentative_url in self.tunnel_mgr.tunnels:
+                    raise ValueError(f"Tunnel {tentative_url} already exists")
+
                 tunnel_info = self.tunnel_mgr.register_tunnel(client_id, tunnel_type, config)
                 
                 self.send_response(conn, {

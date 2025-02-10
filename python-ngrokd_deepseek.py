@@ -3,9 +3,9 @@
 # 建议Python 3.12.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
 # Version: v2.00
+# ngrokd_final.py
 import socket
 import ssl
-import sys
 import json
 import struct
 import time
@@ -13,11 +13,11 @@ import logging
 import threading
 import secrets
 import asyncio
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Tuple, Optional, List, Deque
+from typing import Dict, Deque
 
-# 配置日志
+# === 日志配置 ===
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
@@ -25,35 +25,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger('ngrokd')
 
+# === 隧道管理器 ===
 class TunnelManager:
-    """管理所有隧道和客户端连接"""
     def __init__(self, domain: str):
-        self.domain = domain  # 服务域名
-        self.tunnels: Dict[str, dict] = {}  # client_id: tunnel_info
-        self.conn_map: Dict[str, ssl.SSLSocket] = {}  # client_id: control_conn
-        self.host_map: Dict[str, str] = {}  # hostname: client_id
-        self.subdomain_map: Dict[str, str] = {}  # subdomain: client_id
-        self.tcp_map: Dict[int, str] = {}  # remote_port: client_id
-        self.port_pool = deque(range(10000, 60000))  # 可用端口池
+        self.domain = domain
+        self.tunnels: Dict[str, dict] = {}
+        self.conn_map: Dict[str, ssl.SSLSocket] = {}
+        self.host_map: Dict[str, str] = {}
+        self.subdomain_map: Dict[str, str] = {}
+        self.tcp_map: Dict[int, str] = {}
+        self.port_pool = deque(range(10000, 60000))
         self.lock = threading.RLock()
+        
+        # 请求队列管理
+        self.pending_requests = defaultdict(deque)  # client_id: Deque[dict]
+        self.ready_clients = set()
 
     def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
-        """注册新隧道（添加重复检查）"""
         with self.lock:
-            # 生成URL前先检查是否已存在
-            url = self._generate_url(tunnel_type, config)
-            if url in self.tunnels:
-                raise ValueError(f"Tunnel {url} already registered")
-
-            if tunnel_type == 'tcp':
-                if config['RemotePort'] == 0:
-                    if not self.port_pool:
-                        raise ValueError("No available ports")
-                    config['RemotePort'] = self.port_pool.popleft()
-                elif config['RemotePort'] in self.tcp_map:
-                    raise ValueError(f"Port {config['RemotePort']} already in use")
-                self.tcp_map[config['RemotePort']] = client_id
+            # Hostname唯一性检查
+            if tunnel_type in ['http', 'https'] and config.get('Hostname'):
+                if config['Hostname'] in self.host_map:
+                    raise ValueError(f"Hostname {config['Hostname']} already exists")
+                self.host_map[config['Hostname']] = client_id
             
+            # 生成URL
+            url = self._generate_url(tunnel_type, config)
             tunnel_info = {
                 'client_id': client_id,
                 'type': tunnel_type,
@@ -66,36 +63,53 @@ class TunnelManager:
             return tunnel_info
 
     def _generate_url(self, tunnel_type: str, config: dict) -> str:
-        """生成隧道URL"""
         if tunnel_type == 'http':
-            if config['Subdomain']:
-                return f"http://{config['Subdomain']}.{self.domain}"
-            return f"http://{config['Hostname']}" if config['Hostname'] else f"http://{secrets.token_hex(8)}.{self.domain}"
+            host_part = config.get('Hostname') or f"{config.get('Subdomain', secrets.token_hex(4))}.{self.domain}"
+            return f"http://{host_part}"
         elif tunnel_type == 'https':
-            if config['Subdomain']:
-                return f"https://{config['Subdomain']}.{self.domain}"
-            return f"https://{config['Hostname']}" if config['Hostname'] else f"https://{secrets.token_hex(8)}.{self.domain}"
+            host_part = config.get('Hostname') or f"{config.get('Subdomain', secrets.token_hex(4))}.{self.domain}"
+            return f"https://{host_part}"
         elif tunnel_type == 'tcp':
             return f"tcp://{self.domain}:{config['RemotePort']}"
-        else:
-            raise ValueError(f"Unsupported tunnel type: {tunnel_type}")
+        raise ValueError(f"Unsupported tunnel type: {tunnel_type}")
+
+    def add_pending_request(self, client_id: str, request: dict):
+        with self.lock:
+            self.pending_requests[client_id].append(request)
+
+    def get_pending_request(self, client_id: str) -> dict:
+        with self.lock:
+            return self.pending_requests[client_id].popleft()
+
+    def mark_client_ready(self, client_id: str):
+        with self.lock:
+            self.ready_clients.add(client_id)
 
     def unregister_client(self, client_id: str):
-        """注销客户端所有隧道"""
         with self.lock:
-            to_remove = [url for url, info in self.tunnels.items() if info['client_id'] == client_id]
-            for url in to_remove:
-                if self.tunnels[url]['type'] == 'tcp':
-                    port = self.tunnels[url]['config']['RemotePort']
-                    self.port_pool.append(port)
-                    del self.tcp_map[port]
-                del self.tunnels[url]
+            # 清理host映射
+            to_remove = [host for host, cid in self.host_map.items() if cid == client_id]
+            for host in to_remove:
+                del self.host_map[host]
+            
+            # 清理隧道记录
+            for url in list(self.tunnels.keys()):
+                if self.tunnels[url]['client_id'] == client_id:
+                    if self.tunnels[url]['type'] == 'tcp':
+                        port = self.tunnels[url]['config']['RemotePort']
+                        self.port_pool.append(port)
+                        del self.tcp_map[port]
+                    del self.tunnels[url]
             
             if client_id in self.conn_map:
                 del self.conn_map[client_id]
+            
+            # 清理等待队列
+            del self.pending_requests[client_id]
+            self.ready_clients.discard(client_id)
 
+# === HTTP/HTTPS处理 ===
 class HttpTunnelHandler:
-    """处理HTTP/HTTPS请求转发"""
     def __init__(self, tunnel_mgr: TunnelManager, ssl_cert: str, ssl_key: str, bufsize: int):
         self.tunnel_mgr = tunnel_mgr
         self.ssl_cert = ssl_cert
@@ -104,429 +118,425 @@ class HttpTunnelHandler:
         self.executor = ThreadPoolExecutor(max_workers=100)
         self.ssl_ctx = self._create_ssl_context()
 
-    def _create_ssl_context(self):
-        """创建SSL上下文"""
+    def _create_ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(certfile=self.ssl_cert, keyfile=self.ssl_key)
         return ctx
 
-    async def handle_http_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """处理HTTP请求"""
+    async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            header = await reader.readuntil(b'\r\n\r\n')
-            headers = self._parse_headers(header.decode())
-            host = headers.get('Host', '')
-            
-            with self.tunnel_mgr.lock:
-                if host not in self.tunnel_mgr.host_map:
-                    writer.write(b'HTTP/1.1 404 Not Found\r\n\r\n')
-                    await writer.drain()
-                    return
-                
-                client_id = self.tunnel_mgr.host_map[host]
-                control_conn = self.tunnel_mgr.conn_map.get(client_id)
-                
-                if not control_conn:
-                    writer.write(b'HTTP/1.1 503 Service Unavailable\r\n\r\n')
-                    await writer.drain()
-                    return
+            # 检测HTTPS请求
+            peek_data = await reader.read(1024)
+            is_https = peek_data.startswith(b'\x16\x03')
+            reader._buffer = peek_data + reader._buffer  # 回退数据
 
-            proxy_conn = await self._create_proxy_connection(control_conn, host)
-            await self._bridge_connections(reader, writer, proxy_conn)
-            
+            if is_https:
+                await self.handle_https(reader, writer)
+            else:
+                await self.handle_http(reader, writer)
         except Exception as e:
-            logger.error(f"HTTP处理错误: {str(e)}")
-        finally:
+            logger.error(f"连接处理失败: {str(e)}")
             writer.close()
 
-    async def _create_proxy_connection(self, control_conn: ssl.SSLSocket, host: str):
-        """通过控制连接建立代理通道"""
-        req_id = secrets.token_hex(4)
-        sockinfo = control_conn.getpeername()
-        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-        msg = {
-            'Type': 'StartProxy',
-            'Payload': {
-                'ReqId': req_id,
-                'Url': f"http://{host}",
-                'ClientAddr': clientaddr
-            }
-        }
-        self._send_control_message(control_conn, msg)
-        return await self._wait_for_proxy_connection(req_id)
-
-    async def _wait_for_proxy_connection(self, req_id: str):
-        """等待客户端建立代理连接"""
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-
-        def on_proxy_connected(conn: socket.socket):
-            if not future.done():
-                future.set_result(conn)
-
-        # 模拟等待客户端连接（实际实现需要与客户端协议配合）
-        await asyncio.sleep(1)  # 模拟等待
-        proxy_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        proxy_conn.connect(('localhost', 12345))  # 模拟连接
-        on_proxy_connected(proxy_conn)
-
-        return await future
-
-    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
-        """发送控制消息"""
+    async def handle_http(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            data = json.dumps(msg).encode()
-            header = struct.pack('<II', len(data), 0)
-            conn.send(header + data)
-        except ssl.SSLWantWriteError:
+            header = await reader.readuntil(b'\r\n\r\n')
+            headers = self.parse_headers(header.decode())
+            host = headers.get('Host', '')
+            await self.process_request(host, reader, writer)
+        except asyncio.IncompleteReadError:
             pass
 
-    async def _bridge_connections(self, client_reader, client_writer, proxy_conn):
-        """桥接客户端和代理连接"""
-        async def forward(src, dst):
-            try:
-                while True:
-                    data = await src.read(self.bufsize)
-                    if not data:
-                        break
-                    dst.send(data)
-            except:
-                pass
+    async def handle_https(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            ssl_reader, ssl_writer = await asyncio.wait_for(
+                asyncio.start_ssl(
+                    reader, writer,
+                    sslcontext=self.ssl_ctx,
+                    server_side=True
+                ),
+                timeout=10
+            )
+            sni = ssl_writer.get_extra_info('ssl_object').sni_callback
+            await self.process_request(sni, ssl_reader, ssl_writer)
+        except (asyncio.TimeoutError, ssl.SSLError) as e:
+            logger.error(f"SSL握手失败: {str(e)}")
+            writer.close()
 
-        await asyncio.gather(
-            forward(client_reader, proxy_conn),
-            forward(proxy_conn, client_writer)
-        )
+    def parse_headers(self, header_str: str) -> dict:
+        headers = {}
+        for line in header_str.split('\r\n')[1:]:  # 跳过请求行
+            if ': ' in line:
+                key, value = line.split(': ', 1)
+                headers[key.strip()] = value.strip()
+        return headers
 
+    async def process_request(self, host: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        if not host:
+            writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+            await writer.drain()
+            writer.close()
+            return
+
+        # 查找对应的客户端
+        with self.tunnel_mgr.lock:
+            client_id = self.tunnel_mgr.host_map.get(host)
+            if not client_id or client_id not in self.tunnel_mgr.conn_map:
+                writer.write(b'HTTP/1.1 404 Not Found\r\n\r\n')
+                await writer.drain()
+                writer.close()
+                return
+
+        # 生成客户端地址
+        client_addr = f"{secrets.token_hex(4)}.{self.tunnel_mgr.domain}:{secrets.randbelow(20000)+40000}"
+        
+        # 发送ReqProxy
+        control_conn = self.tunnel_mgr.conn_map[client_id]
+        self.send_control_message(control_conn, {'Type': 'ReqProxy', 'Payload': {}})
+        
+        # 记录待处理请求
+        request_data = {
+            'client_addr': client_addr,
+            'host': host,
+            'reader': reader,
+            'writer': writer,
+            'timestamp': time.time()
+        }
+        self.tunnel_mgr.add_pending_request(client_id, request_data)
+
+    def send_control_message(self, conn: ssl.SSLSocket, msg: dict):
+        try:
+            data = json.dumps(msg).encode()
+            header = struct.pack('<I', len(data))
+            conn.sendall(header + data)
+        except (ssl.SSLWantWriteError, BrokenPipeError) as e:
+            logger.warning(f"控制消息发送失败: {str(e)}")
+
+# === TCP隧道处理 ===
 class TcpTunnelHandler:
-    """处理TCP隧道转发"""
     def __init__(self, tunnel_mgr: TunnelManager, bufsize: int):
         self.tunnel_mgr = tunnel_mgr
         self.bufsize = bufsize
         self.listeners: Dict[int, socket.socket] = {}
         self.executor = ThreadPoolExecutor(max_workers=100)
-        self.lock = threading.RLock()  # 显式初始化锁
+        self.lock = threading.Lock()
 
     def start_tcp_listener(self, port: int):
-        """启动TCP端口监听"""
-        with self.lock:  # 使用初始化好的锁
+        with self.lock:
             if port in self.listeners:
-                raise ValueError(f"Port {port} already in use")
-            
-            def _listen():
+                return
+
+            def listen_task():
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    sock.bind((self.tunnel_mgr.config['host'], port))
+                    sock.bind(('0.0.0.0', port))
                     sock.listen(100)
                     self.listeners[port] = sock
-                    logger.info(f"TCP监听已启动 port:{port}")
-                    
+                    logger.info(f"TCP监听启动: {port}")
+
                     while True:
                         try:
                             client_conn, addr = sock.accept()
                             self.executor.submit(
-                                self._handle_tcp_connection, 
-                                client_conn, 
+                                self.handle_tcp_connection,
+                                client_conn,
                                 port
                             )
                         except OSError:
                             break
 
-            thread = threading.Thread(target=_listen, daemon=True)
-            thread.start()
-            return thread
+            threading.Thread(target=listen_task, daemon=True).start()
 
-    def _handle_tcp_connection(self, client_conn: socket.socket, remote_port: int):
-        """处理TCP连接请求"""
+    def handle_tcp_connection(self, client_conn: socket.socket, port: int):
         try:
             with self.lock:
-                if remote_port not in self.tunnel_mgr.tcp_map:
-                    client_conn.close()
-                    return
-                
-                client_id = self.tunnel_mgr.tcp_map[remote_port]
-                control_conn = self.tunnel_mgr.conn_map.get(client_id)
-                
-                if not control_conn:
+                client_id = self.tunnel_mgr.tcp_map.get(port)
+                if not client_id or client_id not in self.tunnel_mgr.conn_map:
                     client_conn.close()
                     return
 
-            proxy_conn = self._create_proxy_channel(control_conn, remote_port)
-            self._bridge_connections(client_conn, proxy_conn)
+            # 发送ReqProxy
+            control_conn = self.tunnel_mgr.conn_map[client_id]
+            self.send_control_message(control_conn, {'Type': 'ReqProxy', 'Payload': {}})
             
+            # 记录待处理请求
+            client_addr = f"{client_conn.getpeername()[0]}:{port}"
+            request_data = {
+                'client_addr': client_addr,
+                'connection': client_conn,
+                'timestamp': time.time()
+            }
+            self.tunnel_mgr.add_pending_request(client_id, request_data)
+
         except Exception as e:
-            logger.error(f"TCP处理错误: {str(e)}")
-        finally:
+            logger.error(f"TCP处理失败: {str(e)}")
             client_conn.close()
 
-    def _create_proxy_channel(self, control_conn: ssl.SSLSocket, remote_port: int) -> socket.socket:
-        """通过控制连接建立代理通道"""
-        req_id = secrets.token_hex(4)
-        sockinfo = control_conn.getpeername()
-        clientaddr = sockinfo[0] + ':' + str(sockinfo[1])
-        msg = {
-            'Type': 'StartProxy',
-            'Payload': {
-                'ReqId': req_id,
-                'Url': f"tcp://{self.tunnel_mgr.domain}:{remote_port}",
-                'ClientAddr': clientaddr
-            }
-        }
-        self._send_control_message(control_conn, msg)
-        return self._wait_for_proxy_connection(req_id, timeout=30)
-
-    def _wait_for_proxy_connection(self, req_id: str, timeout: int) -> socket.socket:
-        """等待客户端建立代理连接"""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            with self.lock:
-                if req_id in self.tunnel_mgr.tunnels:
-                    return self.tunnel_mgr.tunnels[req_id]['proxy_conn']
-            time.sleep(0.1)
-        raise TimeoutError("等待代理连接超时")
-
-    def _send_control_message(self, conn: ssl.SSLSocket, msg: dict):
-        """发送控制消息"""
+    def send_control_message(self, conn: ssl.SSLSocket, msg: dict):
         try:
             data = json.dumps(msg).encode()
-            header = struct.pack('<II', len(data), 0)
-            conn.send(header + data)
-        except ssl.SSLWantWriteError:
-            pass
+            header = struct.pack('<I', len(data))
+            conn.sendall(header + data)
+        except (ssl.SSLWantWriteError, BrokenPipeError) as e:
+            logger.warning(f"TCP控制消息发送失败: {str(e)}")
 
-    def _bridge_connections(self, client_conn: socket.socket, proxy_conn: socket.socket):
-        """桥接两个TCP连接"""
-        def forward(src, dst):
-            try:
-                while True:
-                    data = src.recv(self.bufsize)
-                    if not data:
-                        break
-                    dst.send(data)
-            except ConnectionResetError:
-                pass
-            finally:
-                src.close()
-                dst.close()
-
-        threading.Thread(
-            target=forward, 
-            args=(client_conn, proxy_conn),
-            daemon=True
-        ).start()
-        
-        threading.Thread(
-            target=forward, 
-            args=(proxy_conn, client_conn),
-            daemon=True
-        ).start()
-
+# === 主服务 ===
 class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
-    """集成所有服务的完整服务端"""
     def __init__(self):
         self.config = {
             'host': '0.0.0.0',
             'http_port': 80,
             'https_port': 443,
-            'control_port': 4443,  # 控制端口
-            'ssl_cert': 'snakeoil.crt',
-            'ssl_key': 'snakeoil.key',
-            'domain': 'ngrok.com', # 服务域名
-            'bufsize': 1024,       # 缓冲区大小
+            'control_port': 4443,
+            'ssl_cert': 'server.crt',
+            'ssl_key': 'server.key',
+            'domain': 'ngrok.example.com',
+            'bufsize': 4096,
             'heartbeat_timeout': 30
         }
         self.tunnel_mgr = TunnelManager(self.config['domain'])
-        # 显式初始化父类
+        
         HttpTunnelHandler.__init__(
-            self, 
-            self.tunnel_mgr, 
-            self.config['ssl_cert'], 
-            self.config['ssl_key'], 
-            self.config['bufsize']
-        )
-        TcpTunnelHandler.__init__(
             self,
             self.tunnel_mgr,
+            self.config['ssl_cert'],
+            self.config['ssl_key'],
             self.config['bufsize']
         )
+        TcpTunnelHandler.__init__(self, self.tunnel_mgr, self.config['bufsize'])
 
-    def start_control_service(self):
-        """启动4443端口的控制服务"""
-        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        context.load_cert_chain(
-            certfile=self.config['ssl_cert'],
-            keyfile=self.config['ssl_key']
-        )
+    async def handle_control_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        client_id = secrets.token_hex(16)
+        logger.info(f"新控制连接: {client_id[:8]}")
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((self.config['host'], self.config['control_port']))
-            sock.listen(100)
-            logger.info(f"控制服务已启动，监听端口：{self.config['control_port']}")
-            
-            while True:
-                try:
-                    conn, addr = sock.accept()
-                    ssl_conn = context.wrap_socket(conn, server_side=True)
-                    client_id = secrets.token_hex(16)
-                    threading.Thread(
-                        target=self.handle_control_connection,
-                        args=(ssl_conn, client_id),
-                        daemon=True
-                    ).start()
-                except Exception as e:
-                    logger.error(f"接受控制连接失败: {str(e)}")
-
-    def handle_control_connection(self, conn: ssl.SSLSocket, client_id: str):
-        """处理控制连接"""
-        logger = logging.getLogger(f"Control:{client_id[:8]}")
-        buffer = b''
-        last_active = time.time()
-        
         try:
-            # 将客户端添加到连接映射
-            with self.tunnel_mgr.lock:
-                self.tunnel_mgr.conn_map[client_id] = conn
+            # 认证处理
+            auth_msg = await reader.readuntil(b'\r\n\r\n')
+            auth_data = json.loads(auth_msg.decode().strip())
+            if auth_data.get('Type') != 'Auth':
+                raise ValueError("需要先进行认证")
 
-            while True:
-                # 心跳检查
-                if time.time() - last_active > self.config['heartbeat_timeout']:
-                    logger.warning("心跳超时，断开连接")
-                    break
-
-                # 接收数据
-                try:
-                    data = conn.recv(self.config['bufsize'])
-                    if not data:
-                        break
-                    buffer += data
-                except ssl.SSLWantReadError:
-                    time.sleep(0.1)
-                    continue
-
-                # 处理完整消息
-                while len(buffer) >= 8:
-                    msg_len = struct.unpack('<I', buffer[:4])[0]
-                    if len(buffer) < msg_len + 8:
-                        break
-
-                    msg_data = buffer[8:8+msg_len]
-                    buffer = buffer[8+msg_len:]
-                    last_active = time.time()
-
-                    try:
-                        msg = json.loads(msg_data.decode())
-                        self.process_control_message(conn, client_id, msg)
-                    except json.JSONDecodeError:
-                        logger.error("无效消息格式")
-
-        except Exception as e:
-            logger.error(f"控制连接异常: {str(e)}")
-        finally:
-            self.tunnel_mgr.unregister_client(client_id)
-            conn.close()
-            logger.info("控制连接关闭")
-
-    def process_control_message(self, conn: ssl.SSLSocket, client_id: str, msg: dict):
-        """处理控制消息（增强隧道注册检查）"""
-        msg_type = msg.get('Type')
-        payload = msg.get('Payload', {})
-
-        logger.debug(f"收到控制消息: {msg_type}")
-
-        if msg_type == 'Auth':
-            self.send_response(conn, {
+            # 发送认证响应
+            resp = {
                 'Type': 'AuthResp',
                 'Payload': {
                     'ClientId': client_id,
                     'Version': '2',
                     'MmVersion': '1.7'
                 }
-            })
-            logger.info(f"客户端认证成功: {client_id}")
+            }
+            writer.write(json.dumps(resp).encode() + b'\r\n\r\n')
+            await writer.drain()
+            logger.info(f"客户端认证成功: {client_id[:8]}")
 
-        elif msg_type == 'ReqTunnel':
+            # 注册控制连接
+            ssl_socket = writer.get_extra_info('ssl_object')
+            with self.tunnel_mgr.lock:
+                self.tunnel_mgr.conn_map[client_id] = ssl_socket
+
+            # 消息处理循环
+            while True:
+                try:
+                    header = await reader.readexactly(4)
+                    msg_len = struct.unpack('<I', header)[0]
+                    msg_data = await reader.readexactly(msg_len)
+                    msg = json.loads(msg_data.decode())
+                    await self.process_control_message(client_id, msg, writer)
+                except (asyncio.IncompleteReadError, ConnectionResetError):
+                    break
+
+        except Exception as e:
+            logger.error(f"控制连接错误: {str(e)}")
+        finally:
+            self.tunnel_mgr.unregister_client(client_id)
+            writer.close()
+            logger.info(f"控制连接关闭: {client_id[:8]}")
+
+    async def process_control_message(self, client_id: str, msg: dict, writer):
+        msg_type = msg.get('Type')
+        payload = msg.get('Payload', {})
+
+        if msg_type == 'ReqTunnel':
             try:
-                tunnel_type = payload['Protocol']
+                tunnel_type = payload.get('Protocol')
                 config = {
                     'Hostname': payload.get('Hostname', ''),
                     'Subdomain': payload.get('Subdomain', ''),
                     'RemotePort': payload.get('RemotePort', 0)
                 }
-                
-                # 检查隧道是否已存在
-                tentative_url = self.tunnel_mgr._generate_url(tunnel_type, config)
-                if tentative_url in self.tunnel_mgr.tunnels:
-                    raise ValueError(f"Tunnel {tentative_url} already exists")
-
                 tunnel_info = self.tunnel_mgr.register_tunnel(client_id, tunnel_type, config)
                 
-                self.send_response(conn, {
+                response = {
                     'Type': 'NewTunnel',
                     'Payload': {
-                        'ReqId': payload['ReqId'],
                         'Url': tunnel_info['url'],
                         'Protocol': tunnel_type,
                         'Error': ''
                     }
-                })
-                logger.info(f"隧道已建立: {tunnel_info['url']}")
+                }
 
-                # 如果是TCP隧道，启动监听
                 if tunnel_type == 'tcp':
-                    self.start_tcp_listener(tunnel_info['config']['RemotePort'])
+                    self.start_tcp_listener(config['RemotePort'])
 
             except Exception as e:
-                self.send_response(conn, {
+                response = {
                     'Type': 'NewTunnel',
                     'Payload': {
-                        'ReqId': payload['ReqId'],
                         'Error': str(e)
                     }
-                })
-                logger.error(f"隧道创建失败: {str(e)}")
+                }
+
+            writer.write(json.dumps(response).encode() + b'\r\n\r\n')
+            await writer.drain()
+
+        elif msg_type == 'RegProxy':
+            logger.info(f"客户端 {client_id[:8]} 注册代理")
+            self.tunnel_mgr.mark_client_ready(client_id)
+            
+            # 处理等待中的请求
+            try:
+                request = self.tunnel_mgr.get_pending_request(client_id)
+                self.send_start_proxy(client_id, request)
+            except IndexError:
+                pass
 
         elif msg_type == 'Ping':
-            self.send_response(conn, {'Type': 'Pong'})
+            writer.write(json.dumps({'Type': 'Pong'}).encode() + b'\r\n\r\n')
+            await writer.drain()
 
-    def send_response(self, conn: ssl.SSLSocket, data: dict):
-        """发送响应消息"""
+    def send_start_proxy(self, client_id: str, request: dict):
+        control_conn = self.tunnel_mgr.conn_map.get(client_id)
+        if not control_conn:
+            return
+
+        # HTTP/HTTPS处理
+        if 'host' in request:
+            msg = {
+                'Type': 'StartProxy',
+                'Payload': {
+                    'Url': f"http://{request['host']}",
+                    'ClientAddr': request['client_addr']
+                }
+            }
+            self.send_control_message(control_conn, msg)
+            
+            # 启动数据桥接
+            asyncio.create_task(self.bridge_http_connection(
+                request['reader'],
+                request['writer'],
+                request['client_addr']
+            ))
+
+        # TCP处理
+        elif 'connection' in request:
+            msg = {
+                'Type': 'StartProxy',
+                'Payload': {
+                    'Url': f"tcp://{self.tunnel_mgr.domain}:{request['client_addr'].split(':')[1]}",
+                    'ClientAddr': request['client_addr']
+                }
+            }
+            self.send_control_message(control_conn, msg)
+            
+            # 启动数据桥接
+            self.bridge_tcp_connection(
+                request['connection'],
+                request['client_addr']
+            )
+
+    async def bridge_http_connection(self, reader, writer, client_addr):
         try:
-            msg = json.dumps(data).encode()
-            header = struct.pack('<II', len(msg), 0)
-            conn.send(header + msg)
+            host, port = client_addr.split(':')
+            proxy_reader, proxy_writer = await asyncio.open_connection(host, int(port))
+
+            async def forward(src, dst):
+                try:
+                    while True:
+                        data = await src.read(self.config['bufsize'])
+                        if not data:
+                            break
+                        dst.write(data)
+                        await dst.drain()
+                except:
+                    pass
+
+            await asyncio.gather(
+                forward(reader, proxy_writer),
+                forward(proxy_reader, writer)
+            )
+
         except Exception as e:
-            logger.error(f"发送响应失败: {str(e)}")
+            logger.error(f"HTTP桥接失败: {str(e)}")
+        finally:
+            writer.close()
+            proxy_writer.close()
 
-    def run(self):
-        """启动所有服务"""
-        # 启动控制服务（4443端口）
-        control_thread = threading.Thread(
-            target=self.start_control_service,
-            daemon=True
+    def bridge_tcp_connection(self, client_conn: socket.socket, client_addr: str):
+        try:
+            host, port = client_addr.split(':')
+            proxy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_sock.connect((host, int(port)))
+
+            def forward(src, dst):
+                try:
+                    while True:
+                        data = src.recv(self.config['bufsize'])
+                        if not data:
+                            break
+                        dst.send(data)
+                except ConnectionResetError:
+                    pass
+                finally:
+                    src.close()
+                    dst.close()
+
+            threading.Thread(
+                target=forward,
+                args=(client_conn, proxy_sock),
+                daemon=True
+            ).start()
+            
+            threading.Thread(
+                target=forward,
+                args=(proxy_sock, client_conn),
+                daemon=True
+            ).start()
+
+        except Exception as e:
+            logger.error(f"TCP桥接失败: {str(e)}")
+            client_conn.close()
+
+    async def start_servers(self):
+        # 启动控制服务
+        control_server = await asyncio.start_server(
+            self.handle_control_connection,
+            host=self.config['host'],
+            port=self.config['control_port']
         )
-        control_thread.start()
 
-        # 启动HTTP/HTTPS服务
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(asyncio.start_server(
-            self.handle_http_request,
+        # 启动HTTP服务
+        http_server = await asyncio.start_server(
+            self.handle_connection,
             host=self.config['host'],
             port=self.config['http_port']
-        ))
-        loop.run_until_complete(asyncio.start_server(
-            self.handle_http_request,
+        )
+
+        # 启动HTTPS服务
+        https_server = await asyncio.start_server(
+            self.handle_connection,
             host=self.config['host'],
             port=self.config['https_port'],
             ssl=self.ssl_ctx
-        ))
+        )
 
-        try:
-            loop.run_forever()
-        except KeyboardInterrupt:
-            logger.info("正在关闭服务器...")
-            loop.close()
+        async with control_server, http_server, https_server:
+            logger.info("服务器已启动")
+            await asyncio.gather(
+                control_server.serve_forever(),
+                http_server.serve_forever(),
+                https_server.serve_forever()
+            )
 
 if __name__ == '__main__':
     server = TunnelServer()
-    server.run()
+    asyncio.run(server.start_servers())

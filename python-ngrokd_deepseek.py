@@ -3,7 +3,6 @@
 # 建议Python 3.12.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
 # Version: v2.00
-# ngrokd_final.py
 import socket
 import ssl
 import json
@@ -288,9 +287,9 @@ class TunnelServer(HttpTunnelHandler, TcpTunnelHandler):
             'http_port': 80,
             'https_port': 443,
             'control_port': 4443,
-            'ssl_cert': 'server.crt',
-            'ssl_key': 'server.key',
-            'domain': 'ngrok.example.com',
+            'ssl_cert': 'snakeoil.crt',
+            'ssl_key': 'snakeoil.key',
+            'domain': 'ngrok.com',
             'bufsize': 4096,
             'heartbeat_timeout': 30
         }

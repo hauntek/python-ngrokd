@@ -339,6 +339,11 @@ class TunnelServer:
         client_id = secrets.token_hex(16)
         logger = logging.getLogger(f"Control:{client_id[:8]}")
         try:
+            # Register control connection
+            with self.tunnel_mgr.lock:
+                self.tunnel_mgr.writer_map[client_id] = writer
+                self.tunnel_mgr.reader_map[client_id] = reader
+
             # Authentication phase
             header = await reader.read(8)
             msg_len, _ = struct.unpack('<II', header)
@@ -362,8 +367,6 @@ class TunnelServer:
             elif auth_msg['Type'] == 'RegProxy':
                 top_client_id = auth_msg['Payload'].get('ClientId', '')
                 with self.tunnel_mgr.lock:
-                    self.tunnel_mgr.writer_map[client_id] = writer
-                    self.tunnel_mgr.reader_map[client_id] = reader
                     self.tunnel_mgr.ready_clients.add(client_id)
             
                 # Process pending requests
@@ -374,11 +377,6 @@ class TunnelServer:
             elif auth_msg['Type'] != 'Auth':
                 raise ValueError("First message must be Auth")
 
-            # Register control connection
-            with self.tunnel_mgr.lock:
-                self.tunnel_mgr.writer_map[client_id] = writer
-                self.tunnel_mgr.reader_map[client_id] = reader
-            
             # Main message loop
             while True:
                 try:

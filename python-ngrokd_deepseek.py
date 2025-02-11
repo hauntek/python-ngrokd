@@ -157,13 +157,13 @@ class TcpTunnelHandler:
 
             # 生成客户端地址
             client_addr = f"{conn.getpeername()[0]}:{port}"
-            
+
             # 发送ReqProxy
             self._send_control_msg(
                 self.tunnel_mgr.writer_map[client_id],
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
-            
+
             # 记录待处理请求
             self.tunnel_mgr.pending_requests[client_id].append({
                 'type': 'tcp',
@@ -206,6 +206,7 @@ class HttpTunnelHandler:
             if not host:
                 writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 await writer.drain()
+                writer.close()
                 return
 
             protocol = 'https' if is_ssl else 'http'
@@ -224,6 +225,7 @@ class HttpTunnelHandler:
 
                     writer.write(header_data.encode('utf-8'))
                     await writer.drain()
+                    writer.close()
                     return
                 
                 client_id = tunnel_info.get('client_id', '')
@@ -239,7 +241,7 @@ class HttpTunnelHandler:
                 self.tunnel_mgr.writer_map[client_id],
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
-            
+
             # Store request with tunnel URL
             self.tunnel_mgr.pending_requests[client_id].append({
                 'type': ('https' if is_ssl else 'http'),
@@ -384,7 +386,7 @@ class TunnelServer:
 
             elif auth_msg['Type'] != 'Auth':
                 raise ValueError("First message must be Auth")
-            
+
             # 消息处理循环
             while True:
                 try:
@@ -487,7 +489,7 @@ class TunnelServer:
                     pass
                 finally:
                     await dst.wait_closed()
-            
+
             await asyncio.gather(
                 forward(src_reader, writer),
                 forward(reader, src_writer)

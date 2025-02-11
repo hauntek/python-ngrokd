@@ -47,7 +47,7 @@ class TunnelManager:
         self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
         self.lock = threading.RLock()
         self.pending_requests = defaultdict(deque)
-        self.ready_clients = set()
+        self.auth_clients = list()
 
     def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
         with self.lock:
@@ -108,7 +108,8 @@ class TunnelManager:
 
             # 清理等待队列
             self.pending_requests.pop(client_id, None)
-            self.ready_clients.discard(client_id)
+            if client_id in self.auth_clients:
+                self.auth_clients.remove(client_id)
             self.client_tunnels.pop(client_id, None)
 
 # === TCP隧道处理 ===
@@ -372,13 +373,18 @@ class TunnelServer:
                 }
                 self._send_msg(writer, resp)
 
+                with self.tunnel_mgr.lock:
+                    self.tunnel_mgr.auth_clients.append(client_id)
+
                 logger.info(f"客户端认证成功: {client_id}")
 
             elif auth_msg['Type'] == 'RegProxy':
                 top_client_id = auth_msg['Payload'].get('ClientId', '')
-                with self.tunnel_mgr.lock:
-                    self.tunnel_mgr.ready_clients.add(client_id)
-            
+                if not top_client_id in self.tunnel_mgr.auth_clients:
+                    raise ValueError("First message must be Auth")
+
+                logger.info(f"桥接端认证成功: {client_id}")
+
                 # 处理等待中的请求
                 while self.tunnel_mgr.pending_requests[top_client_id]:
                     req = self.tunnel_mgr.pending_requests[top_client_id].popleft()

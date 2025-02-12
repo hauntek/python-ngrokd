@@ -9,7 +9,6 @@ import json
 import struct
 import time
 import logging
-import threading
 import secrets
 import asyncio
 from collections import defaultdict, deque
@@ -42,15 +41,16 @@ class TunnelManager:
     def __init__(self):
         self.tunnels: Dict[str, dict] = {}
         self.client_tunnels: Dict[str, List[str]] = defaultdict(list)
+        self.listeners: Dict[int, asyncio.Server] = {}
         self.writer_map: Dict[str, asyncio.StreamWriter] = {}
         self.reader_map: Dict[str, asyncio.StreamReader] = {}
         self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
-        self.lock = threading.RLock()
         self.pending_requests = defaultdict(deque)
         self.auth_clients = list()
+        self.lock = asyncio.Lock()
 
-    def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
-        with self.lock:
+    async def register_tunnel(self, client_id: str, tunnel_type: str, config: dict) -> dict:
+        async with self.lock:
             # 生成并验证隧道URL唯一性
             url = self._generate_url(tunnel_type, config)
             if url in self.tunnels:
@@ -90,14 +90,20 @@ class TunnelManager:
             return f"tcp://{CONFIG['domain']}:{config['RemotePort']}"
         raise ValueError(f"Invalid tunnel type: {tunnel_type}")
 
-    def cleanup_client(self, client_id: str):
-        with self.lock:
+    async def cleanup_client(self, client_id: str):
+        async with self.lock:
             # 清理隧道记录
             for url in list(self.tunnels.keys()):
                 if self.tunnels[url]['client_id'] == client_id:
                     if self.tunnels[url]['type'] == 'tcp':
                         port = self.tunnels[url]['config']['RemotePort']
                         self.port_pool.append(port)
+                        if self.listeners[port].is_serving():
+                            self.listeners[port].close()
+                            await self.listeners[port].wait_closed()
+                        del self.listeners[port]
+                        logger.info(f"TCP监听已关闭 port:{port}")
+
                     del self.tunnels[url]
 
             # 清理读写记录
@@ -116,12 +122,10 @@ class TunnelManager:
 class TcpTunnelHandler:
     def __init__(self, tunnel_mgr: TunnelManager):
         self.tunnel_mgr = tunnel_mgr
-        self.listeners: Dict[int, asyncio.Server] = {}
-        self.lock = asyncio.Lock()
 
     async def start_listener(self, port: int):
-        async with self.lock:
-            if port in self.listeners:
+        async with self.tunnel_mgr.lock:
+            if port in self.tunnel_mgr.listeners:
                 return
 
             async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -133,7 +137,7 @@ class TcpTunnelHandler:
                 port=port,
                 reuse_address=True
             )
-            self.listeners[port] = server
+            self.tunnel_mgr.listeners[port] = server
             logger.info(f"TCP监听已启动 port:{port}")
 
     async def handle_tcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
@@ -142,7 +146,7 @@ class TcpTunnelHandler:
             lookup_url = f"{protocol}://{CONFIG['domain']}:{port}"
 
             # 查找对应的客户端
-            with self.tunnel_mgr.lock:
+            async with self.tunnel_mgr.lock:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
                     writer.close()
@@ -164,7 +168,7 @@ class TcpTunnelHandler:
             )
 
             # 记录待处理请求
-            with self.tunnel_mgr.lock:
+            async with self.tunnel_mgr.lock:
                 self.tunnel_mgr.pending_requests[client_id].append({
                     'reader': reader,
                     'writer': writer,
@@ -218,7 +222,7 @@ class HttpTunnelHandler:
             lookup_url = f"{protocol}://{host}"
 
             # Find client and tunnel URL
-            with self.tunnel_mgr.lock:
+            async with self.tunnel_mgr.lock:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
 
@@ -249,7 +253,7 @@ class HttpTunnelHandler:
             )
 
             # Store request with tunnel URL
-            with self.tunnel_mgr.lock:
+            async with self.tunnel_mgr.lock:
                 self.tunnel_mgr.pending_requests[client_id].append({
                     'reader': reader,
                     'writer': writer,
@@ -357,7 +361,7 @@ class TunnelServer:
         logger = logging.getLogger(f"Control:{client_id[:8]}")
         try:
             # 注册控制连接
-            with self.tunnel_mgr.lock:
+            async with self.tunnel_mgr.lock:
                 self.tunnel_mgr.writer_map[client_id] = writer
                 self.tunnel_mgr.reader_map[client_id] = reader
 
@@ -377,9 +381,9 @@ class TunnelServer:
                         'ClientId': client_id
                     }
                 }
-                self._send_msg(writer, resp)
+                await self._send_msg(writer, resp)
 
-                with self.tunnel_mgr.lock:
+                async with self.tunnel_mgr.lock:
                     self.tunnel_mgr.auth_clients.append(client_id)
 
                 logger.info(f"客户端认证成功: {client_id}")
@@ -417,14 +421,14 @@ class TunnelServer:
         except Exception as e:
             logger.error(f"控制连接错误: {str(e)}")
         finally:
-            self.tunnel_mgr.cleanup_client(client_id)
+            await self.tunnel_mgr.cleanup_client(client_id)
             writer.close()
             logger.info("控制连接关闭")
 
     async def _process_msg(self, client_id: str, msg: dict, writer: asyncio.StreamWriter):
         if msg['Type'] == 'ReqTunnel':
             try:
-                tunnel = self.tunnel_mgr.register_tunnel(
+                tunnel = await self.tunnel_mgr.register_tunnel(
                     client_id,
                     msg['Payload']['Protocol'],
                     msg['Payload']
@@ -438,10 +442,11 @@ class TunnelServer:
                         'Error': ''
                     }
                 }
+
+                logger.info(f"隧道已建立: {tunnel['url']}")
                 if tunnel['type'] == 'tcp':
                     await self.tcp_handler.start_listener(tunnel['config']['RemotePort'])
 
-                logger.info(f"隧道已建立: {tunnel['url']}")
             except Exception as e:
                 resp = {
                     'Type': 'NewTunnel',
@@ -453,10 +458,10 @@ class TunnelServer:
 
                 logger.error(f"隧道创建失败: {str(e)}")
             
-            self._send_msg(writer, resp)
+            await self._send_msg(writer, resp)
 
         elif msg['Type'] == 'Ping':
-            self._send_msg(writer, {'Type': 'Pong'})
+            await self._send_msg(writer, {'Type': 'Pong'})
 
     async def _start_proxy(self, client_id: str, req: dict):
         writer_conn = self.tunnel_mgr.writer_map.get(client_id)
@@ -468,7 +473,7 @@ class TunnelServer:
             return
 
         # 发送StartProxy
-        self._send_msg(writer_conn, {
+        await self._send_msg(writer_conn, {
             'Type': 'StartProxy',
             'Payload': {
                 'Url': req['tunnel_url'],
@@ -479,10 +484,11 @@ class TunnelServer:
         # 启动数据桥接
         await self._bridge_data(req['reader'], req['writer'], reader_conn, writer_conn)
 
-    def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
+    async def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
             data = json.dumps(msg).encode()
             writer.write(struct.pack('<II', len(data), 0) + data)
+            await writer.drain()
         except (ssl.SSLWantWriteError, BrokenPipeError):
             pass
 

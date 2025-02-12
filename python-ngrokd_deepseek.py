@@ -211,6 +211,7 @@ class HttpTunnelHandler:
                 writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
                 await writer.drain()
                 writer.close()
+                await writer.wait_closed()
                 return
 
             protocol = 'https' if is_ssl else 'http'
@@ -230,6 +231,7 @@ class HttpTunnelHandler:
                     writer.write(header_data.encode('utf-8'))
                     await writer.drain()
                     writer.close()
+                    await writer.wait_closed()
                     return
                 
                 client_id = tunnel_info.get('client_id', '')
@@ -241,7 +243,7 @@ class HttpTunnelHandler:
             client_addr = f"{client_ip}:{client_port}"
 
             # Send ReqProxy
-            self._send_control_msg(
+            await self._send_control_msg(
                 self.tunnel_mgr.writer_map[client_id],
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
@@ -259,6 +261,7 @@ class HttpTunnelHandler:
         except Exception as e:
             logger.error(f"HTTP处理失败: {str(e)}")
             writer.close()
+            await writer.wait_closed()
 
     async def _detect_ssl(self, reader: asyncio.StreamReader) -> bool:
         peek_data = await reader.read(1024)
@@ -301,13 +304,16 @@ class HttpTunnelHandler:
 
         return headers.get('Host', '')
 
-    def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
+    async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
             data = json.dumps(msg).encode()
             header = struct.pack('<II', len(data), 0)
             writer.write(header + data)
-        except (ssl.SSLWantWriteError, BrokenPipeError) as e:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError) as e:
             logger.warning(f"HTTP控制消息发送失败: {str(e)}")
+            writer.close()
+            await writer.wait_closed()
 
 # === 主服务 ===
 class TunnelServer:
@@ -503,6 +509,7 @@ class TunnelServer:
             logger.error(f"桥接处理错误: {str(e)}")
         finally:
             src_writer.close()
+            await src_writer.wait_closed()
 
 if __name__ == '__main__':
     server = TunnelServer()

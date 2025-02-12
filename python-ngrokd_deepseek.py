@@ -505,7 +505,7 @@ class TunnelServer:
                         if not dst.is_closing():
                             dst.close()
                             await dst.wait_closed()
-                    except Exception as e:
+                    except Exception:
                         pass
 
             await asyncio.gather(
@@ -519,7 +519,7 @@ class TunnelServer:
                 if not src_writer.is_closing():
                     src_writer.close()
                     await src_writer.wait_closed()
-            except Exception as e:
+            except Exception:
                 pass
 
 if __name__ == '__main__':

@@ -222,13 +222,13 @@ class HttpTunnelHandler:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
 
-                    html = 'Tunnel %s not found' % host
-                    header = "HTTP/1.0 404 Not Foun" + "\r\n"
-                    header += "Content-Length: %d" + "\r\n"
-                    header += "\r\n" + "%s"
-                    header_data = header % (len(html.encode('utf-8')), html)
-
-                    writer.write(header_data.encode('utf-8'))
+                    html = f'Tunnel {host} not found'
+                    response_headers = (
+                        "HTTP/1.1 404 Not Found\r\n"
+                        f"Content-Length: {len(html.encode())}\r\n"
+                        "Content-Type: text/html\r\n\r\n"
+                    )
+                    writer.write(response_headers.encode() + html.encode())
                     await writer.drain()
                     writer.close()
                     await writer.wait_closed()
@@ -264,9 +264,9 @@ class HttpTunnelHandler:
             await writer.wait_closed()
 
     async def _detect_ssl(self, reader: asyncio.StreamReader) -> bool:
-        peek_data = await reader.read(1024)
-        is_ssl = peek_data.startswith(b'\x16\x03')
+        peek_data = await reader.read(4096)
         reader.feed_data(peek_data)
+        is_ssl = peek_data.startswith(b'\x16\x03')
         return is_ssl
 
     async def _get_host(self, reader: asyncio.StreamReader, is_ssl: bool) -> str:
@@ -286,23 +286,20 @@ class HttpTunnelHandler:
             return ''
 
     async def _parse_http_host(self, reader: asyncio.StreamReader) -> str:
-        headers = {}
-        peek_data = await reader.read(1024)
-        reader.feed_data(peek_data)
-        while True:
-            try:
-                line = await reader.readuntil(b'\r\n')
-                if line == b'\r\n':
-                    break
-
-                key, value = line.decode().strip().split(': ', 1)
-                headers[key] = value
-            except Exception:
-                pass
-
-        reader.feed_data(peek_data)
-
-        return headers.get('Host', '')
+        try:
+            # 读取并恢复数据
+            data = await reader.read(4096)
+            reader.feed_data(data)
+        
+            # 解析首行和Host头
+            headers = data.split(b'\r\n')
+            for header in headers:
+                if header.lower().startswith(b'host:'):
+                    return header[5:].strip().decode(errors='ignore')
+            return ''
+        except Exception as e:
+            logger.debug(f"解析HTTP Host失败: {str(e)}")
+            return ''
 
     async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:

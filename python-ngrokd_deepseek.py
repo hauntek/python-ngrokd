@@ -3,16 +3,14 @@
 # 建议Python 3.10.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
 # Version: 2.1.0
-import socket
+import asyncio
 import ssl
 import json
 import struct
 import time
-import logging
 import secrets
-import asyncio
+import logging
 from collections import defaultdict, deque
-from typing import Dict, Deque, List
 
 # === 全局配置 ===
 CONFIG = {
@@ -39,11 +37,11 @@ logger = logging.getLogger('ngrokd')
 # === 隧道管理器 ===
 class TunnelManager:
     def __init__(self):
-        self.tunnels: Dict[str, dict] = {}
-        self.client_tunnels: Dict[str, List[str]] = defaultdict(list)
-        self.listeners: Dict[int, asyncio.Server] = {}
-        self.writer_map: Dict[str, asyncio.StreamWriter] = {}
-        self.reader_map: Dict[str, asyncio.StreamReader] = {}
+        self.tunnels: dict[str, dict] = {}
+        self.client_tunnels: dict[str, list[str]] = defaultdict(list)
+        self.listeners: dict[int, asyncio.Server] = {}
+        self.writer_map: dict[str, asyncio.StreamWriter] = {}
+        self.reader_map: dict[str, asyncio.StreamReader] = {}
         self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
         self.pending_requests = defaultdict(deque)
         self.auth_clients = list()
@@ -487,9 +485,10 @@ class TunnelServer:
     async def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
             data = json.dumps(msg).encode()
-            writer.write(struct.pack('<II', len(data), 0) + data)
+            header = struct.pack('<II', len(data), 0)
+            writer.write(header + data)
             await writer.drain()
-        except (ssl.SSLWantWriteError, BrokenPipeError):
+        except (ConnectionResetError, BrokenPipeError) as e:
             pass
 
     async def _bridge_data(self, src_reader, src_writer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -502,7 +501,12 @@ class TunnelServer:
                 except (ConnectionResetError, BrokenPipeError):
                     pass
                 finally:
-                    await dst.wait_closed()
+                    try:
+                        if not dst.is_closing():
+                            dst.close()
+                            await dst.wait_closed()
+                    except Exception as e:
+                        pass
 
             await asyncio.gather(
                 forward(src_reader, writer),
@@ -511,8 +515,12 @@ class TunnelServer:
         except Exception as e:
             logger.error(f"桥接处理错误: {str(e)}")
         finally:
-            src_writer.close()
-            await src_writer.wait_closed()
+            try:
+                if not src_writer.is_closing():
+                    src_writer.close()
+                    await src_writer.wait_closed()
+            except Exception as e:
+                pass
 
 if __name__ == '__main__':
     server = TunnelServer()

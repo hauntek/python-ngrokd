@@ -488,7 +488,7 @@ class TunnelServer:
             header = struct.pack('<II', len(data), 0)
             writer.write(header + data)
             await writer.drain()
-        except (ConnectionResetError, BrokenPipeError) as e:
+        except (ConnectionResetError, BrokenPipeError):
             pass
 
     async def _bridge_data(self, src_reader, src_writer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):

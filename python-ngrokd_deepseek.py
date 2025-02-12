@@ -116,32 +116,27 @@ class TunnelManager:
 class TcpTunnelHandler:
     def __init__(self, tunnel_mgr: TunnelManager):
         self.tunnel_mgr = tunnel_mgr
-        self.listeners: Dict[int, socket.socket] = {}
-        self.lock = threading.Lock()
+        self.listeners: Dict[int, asyncio.Server] = {}
+        self.lock = asyncio.Lock()
 
-    def start_listener(self, port: int):
-        with self.lock:
+    async def start_listener(self, port: int):
+        async with self.lock:
             if port in self.listeners:
                 return
 
-            def listen_task():
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(('0.0.0.0', port))
-                sock.listen(100)
-                self.listeners[port] = sock
-                logger.info(f"TCP监听已启动 port:{port}")
+            async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+                await self.handle_tcp_connection(reader, writer, port)
 
-                while True:
-                    try:
-                        conn, _ = sock.accept()
-                        self.handle_tcp_connection(conn, port)
-                    except OSError:
-                        break
+            server = await asyncio.start_server(
+                handle_connection,
+                host='0.0.0.0',
+                port=port,
+                reuse_address=True
+            )
+            self.listeners[port] = server
+            logger.info(f"TCP监听已启动 port:{port}")
 
-            threading.Thread(target=listen_task, daemon=True).start()
-
-    def handle_tcp_connection(self, conn: socket.socket, port: int):
+    async def handle_tcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         try:
             protocol = 'tcp'
             lookup_url = f"{protocol}://{CONFIG['domain']}:{port}"
@@ -150,41 +145,49 @@ class TcpTunnelHandler:
             with self.tunnel_mgr.lock:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
-                    conn.close()
+                    writer.close()
+                    await writer.wait_closed()
                     return
 
                 client_id = tunnel_info.get('client_id', '')
                 tunnel_url = tunnel_info.get('url', '')
 
             # 生成客户端地址
-            client_addr = f"{conn.getpeername()[0]}:{port}"
+            peer_info = writer.get_extra_info('peername')
+            client_ip, client_port = peer_info
+            client_addr = f"{client_ip}:{client_port}"
 
             # 发送ReqProxy
-            self._send_control_msg(
+            await self._send_control_msg(
                 self.tunnel_mgr.writer_map[client_id],
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
 
             # 记录待处理请求
-            self.tunnel_mgr.pending_requests[client_id].append({
-                'type': 'tcp',
-                'conn': conn,
-                'client_addr': client_addr,
-                'tunnel_url': tunnel_url,
-                'time': time.time()
-            })
+            with self.tunnel_mgr.lock:
+                self.tunnel_mgr.pending_requests[client_id].append({
+                    'reader': reader,
+                    'writer': writer,
+                    'client_addr': client_addr,
+                    'tunnel_url': tunnel_url,
+                    'time': time.time()
+                })
 
         except Exception as e:
             logger.error(f"TCP处理失败: {str(e)}")
-            conn.close()
+            writer.close()
+            await writer.wait_closed()
 
-    def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
+    async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
             data = json.dumps(msg).encode()
             header = struct.pack('<II', len(data), 0)
             writer.write(header + data)
-        except (ssl.SSLWantWriteError, BrokenPipeError) as e:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError) as e:
             logger.warning(f"TCP控制消息发送失败: {str(e)}")
+            writer.close()
+            await writer.wait_closed()
 
 # === HTTP/HTTPS处理 ===
 class HttpTunnelHandler:
@@ -244,14 +247,14 @@ class HttpTunnelHandler:
             )
 
             # Store request with tunnel URL
-            self.tunnel_mgr.pending_requests[client_id].append({
-                'type': ('https' if is_ssl else 'http'),
-                'reader': reader,
-                'writer': writer,
-                'client_addr': client_addr,
-                'tunnel_url': tunnel_url,
-                'time': time.time()
-            })
+            with self.tunnel_mgr.lock:
+                self.tunnel_mgr.pending_requests[client_id].append({
+                    'reader': reader,
+                    'writer': writer,
+                    'client_addr': client_addr,
+                    'tunnel_url': tunnel_url,
+                    'time': time.time()
+                })
 
         except Exception as e:
             logger.error(f"HTTP处理失败: {str(e)}")
@@ -433,7 +436,7 @@ class TunnelServer:
                     }
                 }
                 if tunnel['type'] == 'tcp':
-                    self.tcp_handler.start_listener(tunnel['config']['RemotePort'])
+                    await self.tcp_handler.start_listener(tunnel['config']['RemotePort'])
 
                 logger.info(f"隧道已建立: {tunnel['url']}")
             except Exception as e:
@@ -471,11 +474,7 @@ class TunnelServer:
         })
 
         # 启动数据桥接
-        if req['type'] == 'tcp':
-            await self._bridge_tcp(req['conn'], reader_conn, writer_conn)
-        else:
-             await self._bridge_http(
-                req['reader'], req['writer'], reader_conn, writer_conn)
+        await self._bridge_data(req['reader'], req['writer'], reader_conn, writer_conn)
 
     def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
@@ -484,7 +483,7 @@ class TunnelServer:
         except (ssl.SSLWantWriteError, BrokenPipeError):
             pass
 
-    async def _bridge_http(self, src_reader, src_writer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _bridge_data(self, src_reader, src_writer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             async def forward(src, dst):
                 try:
@@ -501,68 +500,9 @@ class TunnelServer:
                 forward(reader, src_writer)
             )
         except Exception as e:
-            logger.error(f"HTTP桥接处理错误: {str(e)}")
+            logger.error(f"桥接处理错误: {str(e)}")
         finally:
             src_writer.close()
-
-    async def _bridge_tcp(self, local_conn: socket.socket, reader: asyncio.StreamReader,writer: asyncio.StreamWriter):
-        loop = asyncio.get_running_loop()
-        try:
-            # 创建双向桥接任务
-            async def local_to_remote():
-                while True:
-                    try:
-                        # 在线程池中执行同步Recv
-                        data = await loop.run_in_executor(
-                            None,
-                            lambda: local_conn.recv(CONFIG['bufsize'])
-                        )
-                        if not data:
-                            break
-                    
-                        # 异步写入远程
-                        writer.write(data)
-                        await writer.drain()
-                    except (ConnectionResetError, BrokenPipeError):
-                        break
-
-            async def remote_to_local():
-                while True:
-                    try:
-                        # 异步读取远程数据
-                        data = await reader.read(CONFIG['bufsize'])
-                        if not data:
-                            break
-
-                        # 在线程池中执行同步send
-                        await loop.run_in_executor(
-                            None,
-                            lambda: local_conn.sendall(data)
-                        )
-                    except (ConnectionResetError, BrokenPipeError):
-                        break
-
-            # 并行执行双向传输
-            await asyncio.gather(
-                local_to_remote(),
-                remote_to_local()
-            )
-
-        except Exception as e:
-            logger.error(f"TCP桥接处理错误: {str(e)}")
-        finally:
-            # 安全关闭连接
-            await self._safe_close(local_conn, writer)
-
-
-    async def _safe_close(self, local_conn: socket.socket, writer: asyncio.StreamWriter):
-        # 关闭本地socket
-        try:
-            local_conn.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        local_conn.close()
-
 
 if __name__ == '__main__':
     server = TunnelServer()

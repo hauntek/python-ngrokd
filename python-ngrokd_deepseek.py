@@ -140,8 +140,7 @@ class TcpTunnelHandler:
 
     async def handle_tcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         try:
-            protocol = 'tcp'
-            lookup_url = f"{protocol}://{CONFIG['domain']}:{port}"
+            lookup_url = f"tcp://{CONFIG['domain']}:{port}"
 
             # 查找对应的客户端
             async with self.tunnel_mgr.lock:
@@ -152,12 +151,10 @@ class TcpTunnelHandler:
                     return
 
                 client_id = tunnel_info.get('client_id', '')
-                tunnel_url = tunnel_info.get('url', '')
 
             # 生成客户端地址
             peer_info = writer.get_extra_info('peername')
-            client_ip, client_port = peer_info
-            client_addr = f"{client_ip}:{client_port}"
+            client_addr = f"{peer_info[0]}:{peer_info[1]}"
 
             # 发送ReqProxy
             await self._send_control_msg(
@@ -171,7 +168,7 @@ class TcpTunnelHandler:
                     'reader': reader,
                     'writer': writer,
                     'client_addr': client_addr,
-                    'tunnel_url': tunnel_url,
+                    'tunnel_url': lookup_url,
                     'time': time.time()
                 })
 
@@ -237,7 +234,6 @@ class HttpTunnelHandler:
                     return
                 
                 client_id = tunnel_info.get('client_id', '')
-                tunnel_url = tunnel_info.get('url', '')
 
             # Generate client address
             peer_info = writer.get_extra_info('peername')
@@ -256,7 +252,7 @@ class HttpTunnelHandler:
                     'reader': reader,
                     'writer': writer,
                     'client_addr': client_addr,
-                    'tunnel_url': tunnel_url,
+                    'tunnel_url': lookup_url,
                     'time': time.time()
                 })
 

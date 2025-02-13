@@ -437,6 +437,7 @@ class TunnelServer:
                 logger.info(f"隧道已建立: {tunnel['url']}")
                 if tunnel['type'] == 'tcp':
                     await self.tcp_handler.start_listener(tunnel['config']['RemotePort'])
+                await self._send_msg(writer, resp)
 
             except Exception as e:
                 resp = {
@@ -448,8 +449,7 @@ class TunnelServer:
                 }
 
                 logger.error(f"隧道创建失败: {str(e)}")
-            
-            await self._send_msg(writer, resp)
+                await self._send_msg(writer, resp)
 
         elif msg['Type'] == 'Ping':
             await self._send_msg(writer, {'Type': 'Pong'})

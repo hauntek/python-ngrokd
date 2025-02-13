@@ -148,7 +148,7 @@ class TcpTunnelHandler:
                     await writer.wait_closed()
                     return
 
-                client_id = tunnel_info.get('client_id', '')
+                client_id = tunnel_info['client_id']
 
             # 生成客户端地址
             peer_info = writer.get_extra_info('peername')
@@ -230,8 +230,8 @@ class HttpTunnelHandler:
                     writer.close()
                     await writer.wait_closed()
                     return
-                
-                client_id = tunnel_info.get('client_id', '')
+
+                client_id = tunnel_info['client_id']
 
             # Generate client address
             peer_info = writer.get_extra_info('peername')

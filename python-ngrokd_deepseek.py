@@ -196,31 +196,21 @@ class HttpTunnelHandler:
         ctx.load_cert_chain(CONFIG['ssl_cert'], CONFIG['ssl_key'])
         return ctx
 
-    async def handle_http_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        await self._handle_connection(reader, writer, is_https=False)
-
-    async def handle_https_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        await self._handle_connection(reader, writer, is_https=True)
-
-    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, is_https: bool):
+    async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            protocol = 'https' if is_https else 'http'
             host = ''
 
-            if is_https:
-                host = await self._get_https_host(reader)
+            is_ssl = await self._detect_ssl(reader)
+            if is_ssl:
+                host = await self._get_https_host(reader, writer)
             else:
-                is_ssl = await self._detect_ssl(reader)
-                if is_ssl:
-                    host = await self._get_https_host(reader)
-                    protocol = 'https'
-                else:
-                    host = await self._parse_http_host(reader)
+                host = await self._parse_http_host(reader)
 
             if not host:
                 await self._send_bad_request(writer)
                 return
 
+            protocol = 'https' if is_ssl else 'http'
             lookup_url = f"{protocol}://{host}"
             # 查找对应的客户端
             async with self.tunnel_mgr.lock:
@@ -255,13 +245,23 @@ class HttpTunnelHandler:
             writer.close()
             await writer.wait_closed()
 
-    async def _get_https_host(self, reader: asyncio.StreamReader) -> str:
+    async def _get_https_host(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str:
         try:
-            ssl_reader = await reader.start_tls(
-                ssl_context=self.ssl_ctx,
+            transport = writer.transport
+            protocol = asyncio.StreamReaderProtocol(reader)
+
+            new_transport = await asyncio.get_running_loop().start_tls(
+                transport=transport,
+                protocol=protocol,
+                sslcontext=self.ssl_ctx,
                 server_side=True
             )
-            return ssl_reader._sslobj.server_side_context.get_servername() or ''
+
+            ssl_socket: ssl.SSLSocket = new_transport.get_extra_info('ssl_object')
+
+            sni = ssl_socket.server_side and ssl_socket.context.get_servername()
+            return sni.decode() if sni else ''
+
         except Exception as e:
             logger.error(f"获取SNI失败: {str(e)}")
             return ''
@@ -335,18 +335,21 @@ class TunnelServer:
             self._handle_control,
             host=CONFIG['host'],
             port=CONFIG['control_port'],
-            ssl=self.ssl_ctx
+            ssl=self.ssl_ctx,
+            reuse_address=True
         ) as ctrl_srv, \
         await asyncio.start_server(
-            self.http_handler.handle_http_connection,
+            self.http_handler.handle_connection,
             host=CONFIG['host'],
-            port=CONFIG['http_port']
+            port=CONFIG['http_port'],
+            reuse_address=True
         ) as http_srv, \
         await asyncio.start_server(
-            self.http_handler.handle_https_connection,
+            self.http_handler.handle_connection,
             host=CONFIG['host'],
             port=CONFIG['https_port'],
-            ssl=self.http_handler.ssl_ctx
+            ssl=self.http_handler.ssl_ctx,
+            reuse_address=True
         ) as https_srv:
             logger.info(f"控制服务已启动，监听端口: {CONFIG['control_port']}")
             logger.info(f"HTTP服务已启动，监听端口: {CONFIG['http_port']}")

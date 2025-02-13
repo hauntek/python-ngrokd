@@ -382,7 +382,7 @@ class TunnelServer:
 
             elif auth_msg['Type'] == 'RegProxy':
                 top_client_id = auth_msg['Payload'].get('ClientId', '')
-                if not top_client_id in self.tunnel_mgr.auth_clients:
+                if top_client_id not in self.tunnel_mgr.auth_clients:
                     raise ValueError("First message must be Auth")
 
                 logger.info(f"桥接端认证成功: {client_id}")

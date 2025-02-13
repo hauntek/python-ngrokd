@@ -255,7 +255,7 @@ class HttpTunnelHandler:
             writer.close()
             await writer.wait_closed()
 
-    async def _get_https_host(self, reader: asyncio.StreamReader):
+    async def _get_https_host(self, reader: asyncio.StreamReader) -> str:
         try:
             ssl_reader = await reader.start_tls(
                 ssl_context=self.ssl_ctx,
@@ -266,12 +266,12 @@ class HttpTunnelHandler:
             logger.error(f"获取SNI失败: {str(e)}")
             return ''
 
-    async def _detect_ssl(self, reader: asyncio.StreamReader):
+    async def _detect_ssl(self, reader: asyncio.StreamReader) -> bool:
         peek_data = await reader.read(4096)
         reader.feed_data(peek_data)
         return peek_data.startswith(b'\x16\x03')
 
-    async def _parse_http_host(self, reader: asyncio.StreamReader):
+    async def _parse_http_host(self, reader: asyncio.StreamReader) -> str:
         try:
             # 读取并恢复数据
             data = await reader.read(4096)

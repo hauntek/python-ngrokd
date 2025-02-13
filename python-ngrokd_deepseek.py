@@ -482,7 +482,7 @@ class TunnelServer:
         except (ConnectionResetError, BrokenPipeError):
             pass
 
-    async def _bridge_data(self, src_reader, src_writer, dst_reader, dst_writer):
+    async def _bridge_data(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:
             async def forward(src, dst):
                 try:

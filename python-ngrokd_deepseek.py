@@ -373,10 +373,9 @@ class TunnelServer:
                     }
                 }
                 logger.info(f"客户端认证成功: {client_id}")
-                await self._send_msg(writer, resp)
-
                 async with self.tunnel_mgr.lock:
                     self.tunnel_mgr.auth_clients.append(client_id)
+                await self._send_msg(writer, resp)
 
             elif auth_msg['Type'] == 'RegProxy':
                 top_client_id = auth_msg['Payload'].get('ClientId', '')
@@ -432,7 +431,6 @@ class TunnelServer:
                         'Error': ''
                     }
                 }
-
                 logger.info(f"隧道已建立: {tunnel['url']}")
                 if tunnel['type'] == 'tcp':
                     await self.tcp_handler.start_listener(tunnel['config']['RemotePort'])

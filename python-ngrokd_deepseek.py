@@ -83,7 +83,6 @@ class TunnelManager:
             if config['Subdomain']:
                 return f"https://{config['Subdomain']}.{CONFIG['domain']}"
             return f"https://{config['Hostname']}" if config['Hostname'] else f"https://{secrets.token_hex(4)}.{CONFIG['domain']}"
-
         elif tunnel_type == 'tcp':
             return f"tcp://{CONFIG['domain']}:{config['RemotePort']}"
         raise ValueError(f"Invalid tunnel type: {tunnel_type}")

@@ -11,6 +11,7 @@
 
 # 运行环境
 Python 2.7.9 或 Python 3.4.2 以上
+
 Python 3.10.0 以上[`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py)
 
 # 运行方法

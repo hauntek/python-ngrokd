@@ -170,7 +170,7 @@ class TcpTunnelHandler:
                 })
 
         except Exception as e:
-            logger.error(f"TCP处理失败: {str(e)}")
+            logger.error(f"TCP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
 
@@ -254,7 +254,7 @@ class HttpTunnelHandler:
                 })
 
         except Exception as e:
-            logger.error(f"HTTP处理失败: {str(e)}")
+            logger.error(f"HTTP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
 

@@ -100,7 +100,6 @@ class TunnelManager:
                             await self.listeners[port].wait_closed()
                         del self.listeners[port]
                         logger.info(f"TCP监听已关闭 port:{port}")
-
                     del self.tunnels[url]
 
             # 清理读写记录

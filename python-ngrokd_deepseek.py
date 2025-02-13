@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 3.10.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: 2.1.0
+# Version: 2.2.0
 import asyncio
 import ssl
 import json
@@ -196,54 +196,51 @@ class HttpTunnelHandler:
         ctx.load_cert_chain(CONFIG['ssl_cert'], CONFIG['ssl_key'])
         return ctx
 
-    async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def handle_http_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        await self._handle_connection(reader, writer, is_https=False)
+
+    async def handle_https_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        await self._handle_connection(reader, writer, is_https=True)
+
+    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, is_https: bool):
         try:
-            # Detect SSL
-            is_ssl = await self._detect_ssl(reader)
-            
-            # Get host from request
-            host = await self._get_host(reader, is_ssl)
+            protocol = 'https' if is_https else 'http'
+            host = ''
+
+            if is_https:
+                host = await self._get_https_host(reader)
+            else:
+                is_ssl = await self._detect_ssl(reader)
+                if is_ssl:
+                    host = await self._get_https_host(reader)
+                    protocol = 'https'
+                else:
+                    host = await self._parse_http_host(reader)
+
             if not host:
-                writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
-                await writer.drain()
-                writer.close()
-                await writer.wait_closed()
+                await self._send_bad_request(writer)
                 return
 
-            protocol = 'https' if is_ssl else 'http'
             lookup_url = f"{protocol}://{host}"
-
-            # Find client and tunnel URL
+            # 查找对应的客户端
             async with self.tunnel_mgr.lock:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
-
-                    html = f'Tunnel {host} not found'
-                    response_headers = (
-                        "HTTP/1.1 404 Not Found\r\n"
-                        f"Content-Length: {len(html.encode())}\r\n"
-                        "Content-Type: text/html\r\n\r\n"
-                    )
-                    writer.write(response_headers.encode() + html.encode())
-                    await writer.drain()
-                    writer.close()
-                    await writer.wait_closed()
+                    await self._send_not_found(writer, host)
                     return
-
                 client_id = tunnel_info['client_id']
 
-            # Generate client address
+            # 生成客户端地址
             peer_info = writer.get_extra_info('peername')
-            client_ip, client_port = peer_info
-            client_addr = f"{client_ip}:{client_port}"
+            client_addr = f"{peer_info[0]}:{peer_info[1]}"
 
-            # Send ReqProxy
+            # 发送ReqProxy
             await self._send_control_msg(
                 self.tunnel_mgr.writer_map[client_id],
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
 
-            # Store request with tunnel URL
+            # 记录待处理请求
             async with self.tunnel_mgr.lock:
                 self.tunnel_mgr.pending_requests[client_id].append({
                     'reader': reader,
@@ -258,43 +255,56 @@ class HttpTunnelHandler:
             writer.close()
             await writer.wait_closed()
 
-    async def _detect_ssl(self, reader: asyncio.StreamReader) -> bool:
-        peek_data = await reader.read(4096)
-        reader.feed_data(peek_data)
-        is_ssl = peek_data.startswith(b'\x16\x03')
-        return is_ssl
-
-    async def _get_host(self, reader: asyncio.StreamReader, is_ssl: bool) -> str:
-        if is_ssl:
-            return await self._get_sni_host(reader)
-        else:
-            return await self._parse_http_host(reader)
-
-    async def _get_sni_host(self, reader: asyncio.StreamReader) -> str:
+    async def _get_https_host(self, reader: asyncio.StreamReader):
         try:
             ssl_reader = await reader.start_tls(
                 ssl_context=self.ssl_ctx,
                 server_side=True
             )
             return ssl_reader._sslobj.server_side_context.get_servername() or ''
-        except Exception:
+        except Exception as e:
+            logger.error(f"获取SNI失败: {str(e)}")
             return ''
 
-    async def _parse_http_host(self, reader: asyncio.StreamReader) -> str:
+    async def _detect_ssl(self, reader: asyncio.StreamReader):
+        peek_data = await reader.read(4096)
+        reader.feed_data(peek_data)
+        return peek_data.startswith(b'\x16\x03')
+
+    async def _parse_http_host(self, reader: asyncio.StreamReader):
         try:
             # 读取并恢复数据
             data = await reader.read(4096)
             reader.feed_data(data)
-        
+
             # 解析首行和Host头
             headers = data.split(b'\r\n')
-            for header in headers:
+            for header in headers[1:]:
                 if header.lower().startswith(b'host:'):
                     return header[5:].strip().decode(errors='ignore')
             return ''
         except Exception as e:
-            logger.debug(f"解析HTTP Host失败: {str(e)}")
+            logger.debug(f"解析Host失败: {str(e)}")
             return ''
+
+    async def _send_bad_request(self, writer: asyncio.StreamWriter):
+        writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    async def _send_not_found(self, writer: asyncio.StreamWriter, host: str):
+        html = f'Tunnel {host} not found'
+        response = (
+            "HTTP/1.1 404 Not Found\r\n"
+            f"Content-Length: {len(html.encode())}\r\n"
+            "Content-Type: text/html\r\n\r\n"
+            f"{html}"
+        )
+        writer.write(response.encode())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
 
     async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
@@ -328,12 +338,12 @@ class TunnelServer:
             ssl=self.ssl_ctx
         ) as ctrl_srv, \
         await asyncio.start_server(
-            self.http_handler.handle_connection,
+            self.http_handler.handle_http_connection,
             host=CONFIG['host'],
             port=CONFIG['http_port']
         ) as http_srv, \
         await asyncio.start_server(
-            self.http_handler.handle_connection,
+            self.http_handler.handle_https_connection,
             host=CONFIG['host'],
             port=CONFIG['https_port'],
             ssl=self.http_handler.ssl_ctx

@@ -463,11 +463,8 @@ class TunnelServer:
 
     async def _start_proxy(self, client_id: str, req: dict):
         writer_conn = self.tunnel_mgr.writer_map.get(client_id)
-        if not writer_conn:
-            return
-
         reader_conn = self.tunnel_mgr.reader_map.get(client_id)
-        if not reader_conn:
+        if not writer_conn or not reader_conn:
             return
 
         # 发送StartProxy
@@ -491,7 +488,7 @@ class TunnelServer:
         except (ConnectionResetError, BrokenPipeError):
             pass
 
-    async def _bridge_data(self, src_reader, src_writer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _bridge_data(self, src_reader, src_writer, dst_reader, dst_writer):
         try:
             async def forward(src, dst):
                 try:
@@ -509,8 +506,8 @@ class TunnelServer:
                         pass
 
             await asyncio.gather(
-                forward(src_reader, writer),
-                forward(reader, src_writer)
+                forward(src_reader, dst_writer),
+                forward(dst_reader, src_writer)
             )
         except Exception as e:
             logger.error(f"桥接处理错误: {str(e)}")

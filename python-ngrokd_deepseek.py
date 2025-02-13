@@ -372,12 +372,11 @@ class TunnelServer:
                         'ClientId': client_id
                     }
                 }
+                logger.info(f"客户端认证成功: {client_id}")
                 await self._send_msg(writer, resp)
 
                 async with self.tunnel_mgr.lock:
                     self.tunnel_mgr.auth_clients.append(client_id)
-
-                logger.info(f"客户端认证成功: {client_id}")
 
             elif auth_msg['Type'] == 'RegProxy':
                 top_client_id = auth_msg['Payload'].get('ClientId', '')
@@ -447,7 +446,6 @@ class TunnelServer:
                         'ReqId': msg['Payload'].get('ReqId', '')
                     }
                 }
-
                 logger.error(f"隧道创建失败: {str(e)}")
                 await self._send_msg(writer, resp)
 

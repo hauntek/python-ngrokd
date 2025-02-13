@@ -402,6 +402,7 @@ class TunnelServer:
                 while self.tunnel_mgr.pending_requests[top_client_id]:
                     req = self.tunnel_mgr.pending_requests[top_client_id].popleft()
                     await self._start_proxy(client_id, req)
+                return
 
             elif auth_msg['Type'] != 'Auth':
                 raise ValueError("First message must be Auth")
@@ -409,8 +410,6 @@ class TunnelServer:
             # 消息处理循环
             while True:
                 try:
-                    if auth_msg['Type'] == 'RegProxy':
-                        break
                     header = await asyncio.wait_for(reader.read(8), timeout=CONFIG['timeout'])
                     if not header:
                         break

@@ -20,6 +20,7 @@ CONFIG = {
     'control_port': 4443,
     'domain': 'ngrok.com',
     'bufsize': 8192,
+    'timeout': 60,
     'min_port': 10000,
     'max_port': 60000,
     'ssl_cert': 'snakeoil.crt',
@@ -370,9 +371,9 @@ class TunnelServer:
                 self.tunnel_mgr.reader_map[client_id] = reader
 
             # 认证处理
-            header = await reader.read(8)
+            header = await asyncio.wait_for(reader.read(8), timeout=CONFIG['timeout'])
             msg_len, _ = struct.unpack('<II', header)
-            auth_msg = json.loads(await reader.read(msg_len))
+            auth_msg = json.loads(await asyncio.wait_for(reader.read(msg_len), timeout=CONFIG['timeout']))
 
             logger.debug(f"收到消息: {auth_msg}")
 
@@ -410,11 +411,11 @@ class TunnelServer:
                 try:
                     if auth_msg['Type'] == 'RegProxy':
                         break
-                    header = await reader.read(8)
+                    header = await asyncio.wait_for(reader.read(8), timeout=CONFIG['timeout'])
                     if not header:
                         break
                     msg_len, _ = struct.unpack('<II', header)
-                    msg = json.loads(await reader.read(msg_len))
+                    msg = json.loads(await asyncio.wait_for(reader.read(msg_len), timeout=CONFIG['timeout']))
                     logger.debug(f"收到消息: {msg}")
                     await self._process_msg(client_id, msg, writer)
                 except (ConnectionResetError, BrokenPipeError):

@@ -388,12 +388,15 @@ class TunnelServer:
                 }
                 logger.info(f"客户端认证成功: {client_id}")
                 async with self.tunnel_mgr.lock:
+                    # 注册控制连接
+                    self.tunnel_mgr.writer_map[client_id] = writer
+                    self.tunnel_mgr.reader_map[client_id] = reader
                     self.tunnel_mgr.auth_clients.append(client_id)
                 await self._send_msg(writer, resp)
 
             elif auth_msg['Type'] == 'RegProxy':
-                top_client_id = auth_msg['Payload'].get('ClientId', '')
-                if top_client_id not in self.tunnel_mgr.auth_clients:
+                proxy_id = auth_msg['Payload'].get('ClientId', '')
+                if proxy_id not in self.tunnel_mgr.auth_clients:
                     raise ValueError("First message must be Auth")
 
                 logger.info(f"桥接端认证成功: {client_id}")
@@ -401,8 +404,8 @@ class TunnelServer:
                 # ========== 动态清理过期和无效请求 ==========
                 async with self.tunnel_mgr.lock:
                     valid_requests = deque()
-                    while self.tunnel_mgr.pending_requests[clientid]:
-                        req = self.tunnel_mgr.pending_requests[clientid].popleft()
+                    while self.tunnel_mgr.pending_requests[proxy_id]:
+                        req = self.tunnel_mgr.pending_requests[proxy_id].popleft()
 
                         # 检查请求是否超时（5分钟）
                         if time.time() - req['time'] > 300:
@@ -422,12 +425,12 @@ class TunnelServer:
                     self.tunnel_mgr.writer_map[client_id] = writer
                     self.tunnel_mgr.reader_map[client_id] = reader
                     # 更新队列为有效请求
-                    self.tunnel_mgr.pending_requests[clientid] = valid_requests
+                    self.tunnel_mgr.pending_requests[proxy_id] = valid_requests
                 # ========== 清理结束 ==========
 
                 # 处理剩余有效请求
-                while self.tunnel_mgr.pending_requests[top_client_id]:
-                    req = self.tunnel_mgr.pending_requests[top_client_id].popleft()
+                while self.tunnel_mgr.pending_requests[proxy_id]:
+                    req = self.tunnel_mgr.pending_requests[proxy_id].popleft()
                     await self._start_proxy(client_id, req)
                 return
 

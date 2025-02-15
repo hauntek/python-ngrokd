@@ -489,10 +489,10 @@ class TunnelServer:
             await self._send_msg(writer, {'Type': 'Pong'})
 
     async def _start_proxy(self, client_id: str, req: dict):
-        writer_conn = self.tunnel_mgr.writer_map.get(client_id)
-        reader_conn = self.tunnel_mgr.reader_map.get(client_id)
-        if not writer_conn or not reader_conn:
+        if client_id not in self.tunnel_mgr.writer_map or client_id not in self.tunnel_mgr.reader_map:
             return
+        writer_conn = self.tunnel_mgr.writer_map[client_id]
+        reader_conn = self.tunnel_mgr.reader_map[client_id]
 
         # 发送StartProxy
         await self._send_msg(writer_conn, {

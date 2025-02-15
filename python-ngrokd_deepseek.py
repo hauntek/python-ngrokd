@@ -365,11 +365,6 @@ class TunnelServer:
         client_id = secrets.token_hex(16)
         logger = logging.getLogger(f"Control:{client_id[:8]}")
         try:
-            # 注册控制连接
-            async with self.tunnel_mgr.lock:
-                self.tunnel_mgr.writer_map[client_id] = writer
-                self.tunnel_mgr.reader_map[client_id] = reader
-
             # 认证处理
             header = await asyncio.wait_for(reader.read(8), timeout=CONFIG['timeout'])
             msg_len, _ = struct.unpack('<II', header)

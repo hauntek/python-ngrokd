@@ -398,7 +398,34 @@ class TunnelServer:
 
                 logger.info(f"桥接端认证成功: {client_id}")
 
-                # 处理等待中的请求
+                # ========== 动态清理过期和无效请求 ==========
+                async with self.tunnel_mgr.lock:
+                    valid_requests = deque()
+                    while self.tunnel_mgr.pending_requests[clientid]:
+                        req = self.tunnel_mgr.pending_requests[clientid].popleft()
+
+                        # 检查请求是否超时（5分钟）
+                        if time.time() - req['time'] > 300:
+                            logger.warning(f"清理过期请求: {req['tunnel_url']}")
+                            req['writer'].close()
+                            await req['writer'].wait_closed()
+                            continue
+
+                        # 检查连接是否已关闭
+                        if req['writer'].is_closing() or req['reader'].at_eof():
+                            logger.warning(f"清理无效连接: {req['client_addr']}")
+                            continue
+
+                        valid_requests.append(req)
+
+                    # 注册控制连接
+                    self.tunnel_mgr.writer_map[client_id] = writer
+                    self.tunnel_mgr.reader_map[client_id] = reader
+                    # 更新队列为有效请求
+                    self.tunnel_mgr.pending_requests[clientid] = valid_requests
+                # ========== 清理结束 ==========
+
+                # 处理剩余有效请求
                 while self.tunnel_mgr.pending_requests[top_client_id]:
                     req = self.tunnel_mgr.pending_requests[top_client_id].popleft()
                     await self._start_proxy(client_id, req)

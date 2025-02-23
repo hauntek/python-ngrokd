@@ -179,6 +179,7 @@ class TcpTunnelHandler:
                 writer.close()
                 await writer.wait_closed()
                 return
+
             proxy_writer = self.tunnel_mgr.writer_map[proxy_client_id]
             proxy_reader = self.tunnel_mgr.reader_map[proxy_client_id]
 
@@ -311,6 +312,7 @@ class HttpTunnelHandler:
                 writer.close()
                 await writer.wait_closed()
                 return
+
             proxy_writer = self.tunnel_mgr.writer_map[proxy_client_id]
             proxy_reader = self.tunnel_mgr.reader_map[proxy_client_id]
 
@@ -487,11 +489,6 @@ class TunnelServer:
         client_id = secrets.token_hex(16)
         logger = logging.getLogger(f"Control:{client_id[:8]}")
         try:
-            # 注册控制连接
-            async with self.tunnel_mgr.lock:
-                self.tunnel_mgr.writer_map[client_id] = writer
-                self.tunnel_mgr.reader_map[client_id] = reader
-
             # 认证处理
             header = await asyncio.wait_for(reader.read(8), timeout=CONFIG['timeout'])
             msg_len, _ = struct.unpack('<II', header)
@@ -510,20 +507,26 @@ class TunnelServer:
                 }
                 logger.info(f"客户端认证成功: {client_id}")
                 async with self.tunnel_mgr.lock:
+                    # 注册控制连接
+                    self.tunnel_mgr.writer_map[client_id] = writer
+                    self.tunnel_mgr.reader_map[client_id] = reader
                     self.tunnel_mgr.auth_clients.append(client_id)
                 await self._send_msg(writer, resp)
 
             elif auth_msg['Type'] == 'RegProxy':
-                clientid = auth_msg['Payload'].get('ClientId', '')
+                proxy_id = auth_msg['Payload'].get('ClientId', '')
                 async with self.tunnel_mgr.lock:
-                    if clientid not in self.tunnel_mgr.auth_clients:
+                    if proxy_id not in self.tunnel_mgr.auth_clients:
                         raise ValueError("First message must be Auth")
 
                 logger.info(f"桥接端认证成功: {client_id}")
 
                 # 记录代理客户端
                 async with self.tunnel_mgr.lock:
-                    await self.tunnel_mgr.pending_queues[clientid].put(client_id)
+                    # 注册控制连接
+                    self.tunnel_mgr.writer_map[client_id] = writer
+                    self.tunnel_mgr.reader_map[client_id] = reader
+                    await self.tunnel_mgr.pending_queues[proxy_id].put(client_id)
                 return
 
             elif auth_msg['Type'] != 'Auth':

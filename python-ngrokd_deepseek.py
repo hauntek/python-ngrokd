@@ -452,11 +452,12 @@ class HttpTunnelHandler:
         await writer.wait_closed()
 
     async def _send_not_found(self, writer: asyncio.StreamWriter, host: str):
+        html = f"Tunnel {host} not found"
         response = (
             "HTTP/1.1 404 Not Found\r\n"
             f"Content-Length: {len(html.encode())}\r\n"
             "Content-Type: text/html\r\n\r\n"
-            f"Tunnel {host} not found"
+            f"{html}"
         )
         writer.write(response.encode())
         await writer.drain()
@@ -567,7 +568,7 @@ class TunnelServer:
                 if proxy_id not in self.tunnel_mgr.auth_clients:
                     raise ValueError("First message must be Auth")
 
-                logger.info(f"桥接端认证成功: {client_id}")
+                logger.info(f"代理端认证成功: {client_id}")
 
                 # 记录代理客户端
                 async with self.tunnel_mgr.lock:

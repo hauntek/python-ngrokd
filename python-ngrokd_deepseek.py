@@ -6,6 +6,7 @@
 import asyncio
 import ssl
 import json
+import base64
 import struct
 import time
 import secrets
@@ -64,6 +65,9 @@ class TunnelManager:
                 elif self.tunnels.get(f"tcp://{CONFIG['domain']}:{port}"):
                     raise ValueError(f"Port {port} already in use")
                 config['RemotePort'] = port
+
+            if config['HttpAuth']:
+                config['HttpAuth'] = "Basic " + base64.b64encode(http_auth.encode('utf-8')).decode('utf-8')
 
             tunnel_info = {
                 'client_id': client_id,
@@ -268,11 +272,13 @@ class HttpTunnelHandler:
             if is_ssl:
                 host = await self._get_https_host(reader, writer)
             else:
-                host = await self._parse_http_host(reader)
+                host = await self._parse_http_host(reader, "Host")
 
             if not host:
                 await self._send_bad_request(writer)
                 return
+
+            auth = await self._parse_http_host(reader, "Authorization")
 
             protocol = 'https' if is_ssl else 'http'
             lookup_url = f"{protocol}://{host}"
@@ -281,6 +287,10 @@ class HttpTunnelHandler:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
                     await self._send_not_found(writer, host)
+                    return
+                httpauth = tunnel_info['config']['HttpAuth']
+                if httpauth and auth != httpauth:
+                    await self._send_not_authorized(writer)
                     return
                 client_id = tunnel_info['client_id']
 
@@ -397,20 +407,23 @@ class HttpTunnelHandler:
         reader.feed_data(peek_data)
         return peek_data.startswith(b'\x16\x03')
 
-    async def _parse_http_host(self, reader: asyncio.StreamReader) -> str:
+    async def _parse_http_host(self, reader: asyncio.StreamReader, header_name: str) -> str:
         try:
             # 读取并恢复数据
             data = await reader.read(4096)
             reader.feed_data(data)
 
-            # 解析首行和Host头
+            # 按行分割数据
             headers = data.split(b'\r\n')
+
+            # 跳过首行（请求行），从第二行开始解析头部
             for header in headers[1:]:
-                if header.lower().startswith(b'host:'):
-                    return header[5:].strip().decode(errors='ignore')
+                if header.lower().startswith(header_name.lower().encode() + b':'):
+                    # 提取并返回头部值
+                    return header.split(b':', 1)[1].strip().decode(errors='ignore')
             return ''
         except Exception as e:
-            logger.debug(f"解析Host失败: {str(e)}")
+            logger.debug(f"解析头部字段 {header_name} 失败: {str(e)}")
             return ''
 
     async def _send_bad_request(self, writer: asyncio.StreamWriter):

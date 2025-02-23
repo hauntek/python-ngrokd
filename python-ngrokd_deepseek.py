@@ -415,8 +415,7 @@ class TunnelServer:
                         self.tunnel_mgr.auth_clients.append(client_id)
                     await self._send_msg(writer, resp)
                     # 提前请求代理连接
-                    for i in range(0, 1000):
-                        await self._send_msg(writer, {'Type': 'ReqProxy', 'Payload': {}})
+                    await self._send_msg(writer, {'Type': 'ReqProxy', 'Payload': {}})
                 except Exception as e:
                     resp = {
                         'Type': 'AuthResp',

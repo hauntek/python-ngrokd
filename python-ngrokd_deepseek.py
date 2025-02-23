@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 3.10.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: 2.2.0
+# Version: 2.3.0
 import asyncio
 import ssl
 import json

@@ -414,18 +414,36 @@ class HttpTunnelHandler:
             return ''
 
     async def _send_bad_request(self, writer: asyncio.StreamWriter):
-        writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+        response = (
+            b'HTTP/1.1 400 Bad Request\r\n'
+            b'Content-Length: 12\r\n'
+            b"Content-Type: text/html\r\n\r\n"
+            b'Bad Request'
+        )
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    async def _send_not_authorized(self, writer: asyncio.StreamWriter):
+        response = (
+            b'HTTP/1.1 401 Not Authorized\r\n'
+            b'WWW-Authenticate: Basic realm="ngrok"\r\n'
+            b'Content-Length: 23\r\n'
+            b"Content-Type: text/html\r\n\r\n"
+            b'Authorization required'
+        )
+        writer.write(response)
         await writer.drain()
         writer.close()
         await writer.wait_closed()
 
     async def _send_not_found(self, writer: asyncio.StreamWriter, host: str):
-        html = f'Tunnel {host} not found'
         response = (
             "HTTP/1.1 404 Not Found\r\n"
             f"Content-Length: {len(html.encode())}\r\n"
             "Content-Type: text/html\r\n\r\n"
-            f"{html}"
+            f"Tunnel {host} not found"
         )
         writer.write(response.encode())
         await writer.drain()

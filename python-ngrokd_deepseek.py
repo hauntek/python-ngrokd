@@ -21,6 +21,7 @@ CONFIG = {
     'domain': 'ngrok.com',
     'bufsize': 8192,
     'timeout': 60,
+    'authtoken': [],
     'min_port': 10000,
     'max_port': 60000,
     'ssl_cert': 'snakeoil.crt',
@@ -497,6 +498,10 @@ class TunnelServer:
             logger.debug(f"收到消息: {auth_msg}")
 
             if auth_msg['Type'] == 'Auth':
+                user = auth_msg['Payload'].get('User', '')
+                if CONFIG['authtoken'] and user not in CONFIG['authtoken']:
+                    raise ValueError("User token not authorized")
+
                 resp = {
                     'Type': 'AuthResp',
                     'Payload': {

@@ -529,25 +529,38 @@ class TunnelServer:
             logger.debug(f"收到消息: {auth_msg}")
 
             if auth_msg['Type'] == 'Auth':
-                user = auth_msg['Payload'].get('User', '')
-                if CONFIG['authtoken'] and user not in CONFIG['authtoken']:
-                    raise ValueError("User token not authorized")
+                try:
+                    user = auth_msg['Payload'].get('User', '')
+                    if CONFIG['authtoken'] and user not in CONFIG['authtoken']:
+                        raise ValueError(f"User token {user} not authorized")
 
-                resp = {
-                    'Type': 'AuthResp',
-                    'Payload': {
-                        'Version': '2',
-                        'MmVersion': '1.7',
-                        'ClientId': client_id
+                    resp = {
+                        'Type': 'AuthResp',
+                        'Payload': {
+                            'Version': '2',
+                            'MmVersion': '1.7',
+                            'ClientId': client_id
+                        }
                     }
-                }
-                logger.info(f"客户端认证成功: {client_id}")
-                async with self.tunnel_mgr.lock:
-                    # 注册控制连接
-                    self.tunnel_mgr.writer_map[client_id] = writer
-                    self.tunnel_mgr.reader_map[client_id] = reader
-                    self.tunnel_mgr.auth_clients.append(client_id)
-                await self._send_msg(writer, resp)
+                    logger.info(f"客户端认证成功: {client_id}")
+                    async with self.tunnel_mgr.lock:
+                        # 注册控制连接
+                        self.tunnel_mgr.writer_map[client_id] = writer
+                        self.tunnel_mgr.reader_map[client_id] = reader
+                        self.tunnel_mgr.auth_clients.append(client_id)
+                    await self._send_msg(writer, resp)
+                except Exception as e:
+                    resp = {
+                        'Type': 'AuthResp',
+                        'Payload': {
+                            'Error': str(e)
+                        }
+                    }
+                    logger.error(f"客户端认证失败: {str(e)}")
+                    async with self.tunnel_mgr.lock:
+                        self.tunnel_mgr.auth_clients.append(client_id)
+                    await self._send_msg(writer, resp)
+                    return
 
             elif auth_msg['Type'] == 'RegProxy':
                 proxy_id = auth_msg['Payload'].get('ClientId', '')

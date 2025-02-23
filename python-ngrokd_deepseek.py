@@ -67,7 +67,7 @@ class TunnelManager:
                 config['RemotePort'] = port
 
             if config['HttpAuth']:
-                config['HttpAuth'] = "Basic " + base64.b64encode(http_auth.encode('utf-8')).decode('utf-8')
+                config['HttpAuth'] = "Basic " + base64.b64encode(config['HttpAuth'].encode('utf-8')).decode('utf-8')
 
             tunnel_info = {
                 'client_id': client_id,

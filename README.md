@@ -22,6 +22,27 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
 # 温馨提示
 如果有小伙伴不想依赖环境运行，不妨可以试下PyInstaller，把py编译成可执行文件。
 
+## 更新日记 v2.3(2025/02/23)
+
+***
+
+1. **代理转发关键改进**
+   - 等待代理端连接模型切换，解决高并发无法有效数据转发
+   - 代理端数据双向转发由请求端处理，解决高并发无法有效数据转发
+   - 添加等待`RegProxy`超时机制，有效解决资源释放
+
+2. **功能修复**
+   - 验证`Auth`消息异常无法正确发送错误消息
+
+3. **功能增强**
+   - 补全认证缺失的`authToken`功能，以及隧道缺失的`HttpAuth`功能
+
+**Tip**: 
+   - 1.由人工智能优化代码和生成更新日记（DeepSeek v3）
+   - 2.运行环境需Python 3.10.0 以上[`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py)
+
+***
+
 ## 更新日记 v2.2(2025/02/13)
 
 ***

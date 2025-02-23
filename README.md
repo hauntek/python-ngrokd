@@ -1,7 +1,7 @@
 # python-ngrokd
 ![license](https://img.shields.io/badge/license-GPLV3-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![version](https://img.shields.io/badge/Release-v2.2-orange)
+![version](https://img.shields.io/badge/Release-v2.3-orange)
 
 基本上已经完善！并且24*7小时长时间工作，在期间我们多次并发压力测试，服务端退出资源释放等，均无任何问题。
 
@@ -32,7 +32,7 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
    - 添加等待`RegProxy`超时机制，有效解决资源释放
 
 2. **功能修复**
-   - 验证`Auth`消息，出现验证失败异常无法发送错误消息
+   - 验证`Auth`消息，出现认证失败异常无法发送错误消息
 
 3. **功能增强**
    - 补全认证缺失的`authToken`功能，以及隧道缺失的`HttpAuth`功能

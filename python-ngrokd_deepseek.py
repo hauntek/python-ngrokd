@@ -44,7 +44,7 @@ class TunnelManager:
         self.writer_map: dict[str, asyncio.StreamWriter] = {}
         self.reader_map: dict[str, asyncio.StreamReader] = {}
         self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
-        self.pending_requests = defaultdict(deque)
+        self.pending_queues = defaultdict(asyncio.Queue)
         self.auth_clients = list()
         self.lock = asyncio.Lock()
 
@@ -110,7 +110,7 @@ class TunnelManager:
                 del self.reader_map[client_id]
 
             # 清理等待队列
-            self.pending_requests.pop(client_id, None)
+            self.pending_queues.pop(client_id, None)
             if client_id in self.auth_clients:
                 self.auth_clients.remove(client_id)
             self.client_tunnels.pop(client_id, None)
@@ -160,20 +160,82 @@ class TcpTunnelHandler:
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
 
-            # 记录待处理请求
-            async with self.tunnel_mgr.lock:
-                self.tunnel_mgr.pending_requests[client_id].append({
-                    'reader': reader,
-                    'writer': writer,
-                    'client_addr': client_addr,
-                    'tunnel_url': lookup_url,
-                    'time': time.time()
-                })
+            # 等待代理端连接
+            queue = self.tunnel_mgr.pending_queues[client_id]
+            try:
+                proxy_client_id = await asyncio.wait_for(queue.get(), timeout=CONFIG['timeout'])
+            except asyncio.TimeoutError:
+                logger.warning("等待RegProxy超时")
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            if not proxy_client_id:
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            if proxy_client_id not in self.tunnel_mgr.writer_map or proxy_client_id not in self.tunnel_mgr.reader_map:
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            proxy_writer = self.tunnel_mgr.writer_map[proxy_client_id]
+            proxy_reader = self.tunnel_mgr.reader_map[proxy_client_id]
+
+            # 发送StartProxy
+            await self._send_control_msg(proxy_writer, {
+                'Type': 'StartProxy',
+                'Payload': {
+                    'Url': lookup_url,
+                    'ClientAddr': client_addr
+                }
+            })
+
+            # 启动数据桥接
+            await self._bridge_data(reader, writer, proxy_reader, proxy_writer)
+
+            # 关闭RegProxy通道
+            await self.tunnel_mgr.cleanup_client(proxy_client_id)
+            proxy_writer.close()
+            logger = logging.getLogger(f"Control:{proxy_client_id[:8]}")
+            logger.info("控制连接关闭")
 
         except Exception as e:
             logger.error(f"TCP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
+
+    async def _bridge_data(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+        try:
+            async def forward(src, dst):
+                try:
+                    while data := await src.read(CONFIG['bufsize']):
+                        dst.write(data)
+                        await dst.drain()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                finally:
+                    try:
+                        if not dst.is_closing():
+                            dst.close()
+                            await dst.wait_closed()
+                    except Exception:
+                        pass
+
+            await asyncio.gather(
+                forward(src_reader, dst_writer),
+                forward(dst_reader, src_writer)
+            )
+        except Exception as e:
+            logger.error(f"桥接处理错误: {str(e)}")
+        finally:
+            try:
+                if not src_writer.is_closing():
+                    src_writer.close()
+                    await src_writer.wait_closed()
+            except Exception:
+                pass
 
     async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
@@ -231,20 +293,82 @@ class HttpTunnelHandler:
                 {'Type': 'ReqProxy', 'Payload': {}}
             )
 
-            # 记录待处理请求
-            async with self.tunnel_mgr.lock:
-                self.tunnel_mgr.pending_requests[client_id].append({
-                    'reader': reader,
-                    'writer': writer,
-                    'client_addr': client_addr,
-                    'tunnel_url': lookup_url,
-                    'time': time.time()
-                })
+            # 等待代理端连接
+            queue = self.tunnel_mgr.pending_queues[client_id]
+            try:
+                proxy_client_id = await asyncio.wait_for(queue.get(), timeout=CONFIG['timeout'])
+            except asyncio.TimeoutError:
+                logger.warning("等待RegProxy超时")
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            if not proxy_client_id:
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            if proxy_client_id not in self.tunnel_mgr.writer_map or proxy_client_id not in self.tunnel_mgr.reader_map:
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            proxy_writer = self.tunnel_mgr.writer_map[proxy_client_id]
+            proxy_reader = self.tunnel_mgr.reader_map[proxy_client_id]
+
+            # 发送StartProxy
+            await self._send_control_msg(proxy_writer, {
+                'Type': 'StartProxy',
+                'Payload': {
+                    'Url': lookup_url,
+                    'ClientAddr': client_addr
+                }
+            })
+
+            # 启动数据桥接
+            await self._bridge_data(reader, writer, proxy_reader, proxy_writer)
+
+            # 关闭RegProxy通道
+            await self.tunnel_mgr.cleanup_client(proxy_client_id)
+            proxy_writer.close()
+            logger = logging.getLogger(f"Control:{proxy_client_id[:8]}")
+            logger.info("控制连接关闭")
 
         except Exception as e:
             logger.error(f"HTTP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
+
+    async def _bridge_data(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+        try:
+            async def forward(src, dst):
+                try:
+                    while data := await src.read(CONFIG['bufsize']):
+                        dst.write(data)
+                        await dst.drain()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                finally:
+                    try:
+                        if not dst.is_closing():
+                            dst.close()
+                            await dst.wait_closed()
+                    except Exception:
+                        pass
+
+            await asyncio.gather(
+                forward(src_reader, dst_writer),
+                forward(dst_reader, src_writer)
+            )
+        except Exception as e:
+            logger.error(f"桥接处理错误: {str(e)}")
+        finally:
+            try:
+                if not src_writer.is_closing():
+                    src_writer.close()
+                    await src_writer.wait_closed()
+            except Exception:
+                pass
 
     async def _get_https_host(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str:
         try:
@@ -396,37 +520,12 @@ class TunnelServer:
 
                 logger.info(f"桥接端认证成功: {client_id}")
 
-                # ========== 动态清理过期和无效请求 ==========
+                # 记录代理客户端
                 async with self.tunnel_mgr.lock:
-                    valid_requests = deque()
-                    while self.tunnel_mgr.pending_requests[proxy_id]:
-                        req = self.tunnel_mgr.pending_requests[proxy_id].popleft()
-
-                        # 检查请求是否超时（5分钟）
-                        if time.time() - req['time'] > 300:
-                            logger.warning(f"清理过期请求: {req['tunnel_url']}")
-                            req['writer'].close()
-                            await req['writer'].wait_closed()
-                            continue
-
-                        # 检查连接是否已关闭
-                        if req['writer'].is_closing() or req['reader'].at_eof():
-                            logger.warning(f"清理无效连接: {req['client_addr']}")
-                            continue
-
-                        valid_requests.append(req)
-
                     # 注册控制连接
                     self.tunnel_mgr.writer_map[client_id] = writer
                     self.tunnel_mgr.reader_map[client_id] = reader
-                    # 更新队列为有效请求
-                    self.tunnel_mgr.pending_requests[proxy_id] = valid_requests
-                # ========== 清理结束 ==========
-
-                # 处理剩余有效请求
-                while self.tunnel_mgr.pending_requests[proxy_id]:
-                    req = self.tunnel_mgr.pending_requests[proxy_id].popleft()
-                    await self._start_proxy(client_id, req)
+                    await self.tunnel_mgr.pending_queues[proxy_id].put(client_id)
                 return
 
             elif auth_msg['Type'] != 'Auth':
@@ -448,6 +547,8 @@ class TunnelServer:
         except Exception as e:
             logger.error(f"控制连接错误: {str(e)}")
         finally:
+            if client_id not in self.tunnel_mgr.auth_clients:
+                return
             await self.tunnel_mgr.cleanup_client(client_id)
             writer.close()
             logger.info("控制连接关闭")
@@ -488,24 +589,6 @@ class TunnelServer:
         elif msg['Type'] == 'Ping':
             await self._send_msg(writer, {'Type': 'Pong'})
 
-    async def _start_proxy(self, client_id: str, req: dict):
-        if client_id not in self.tunnel_mgr.writer_map or client_id not in self.tunnel_mgr.reader_map:
-            return
-        writer_conn = self.tunnel_mgr.writer_map[client_id]
-        reader_conn = self.tunnel_mgr.reader_map[client_id]
-
-        # 发送StartProxy
-        await self._send_msg(writer_conn, {
-            'Type': 'StartProxy',
-            'Payload': {
-                'Url': req['tunnel_url'],
-                'ClientAddr': req['client_addr']
-            }
-        })
-
-        # 启动数据桥接
-        await self._bridge_data(req['reader'], req['writer'], reader_conn, writer_conn)
-
     async def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
             data = json.dumps(msg).encode()
@@ -514,37 +597,6 @@ class TunnelServer:
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError):
             pass
-
-    async def _bridge_data(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
-        try:
-            async def forward(src, dst):
-                try:
-                    while data := await src.read(CONFIG['bufsize']):
-                        dst.write(data)
-                        await dst.drain()
-                except (ConnectionResetError, BrokenPipeError):
-                    pass
-                finally:
-                    try:
-                        if not dst.is_closing():
-                            dst.close()
-                            await dst.wait_closed()
-                    except Exception:
-                        pass
-
-            await asyncio.gather(
-                forward(src_reader, dst_writer),
-                forward(dst_reader, src_writer)
-            )
-        except Exception as e:
-            logger.error(f"桥接处理错误: {str(e)}")
-        finally:
-            try:
-                if not src_writer.is_closing():
-                    src_writer.close()
-                    await src_writer.wait_closed()
-            except Exception:
-                pass
 
 if __name__ == '__main__':
     server = TunnelServer()

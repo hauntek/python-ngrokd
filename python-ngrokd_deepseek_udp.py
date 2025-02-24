@@ -572,8 +572,7 @@ class TunnelServer:
                 if protocol == 'udp':
                     rport = int(url.split(":")[-1])
                     client_addr = req['client_addr'].split(':')
-                    target_addr = (client_addr[0], int(client_addr[1]))
-                    await self._bridge_data_udp(req['reader'], target_addr, rport, reader, writer)
+                    await self._bridge_data_udp(req['reader'], client_addr, rport, reader, writer)
                     return
                 await self._bridge_data_tcp(req['reader'], req['writer'], reader, writer)
                 return
@@ -648,11 +647,13 @@ class TunnelServer:
         except (ConnectionResetError, BrokenPipeError):
             pass
 
-    async def _bridge_data_udp(self, src_reader: asyncio.StreamReader, target_addr, rport, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+    async def _bridge_data_udp(self, src_reader: asyncio.StreamReader, client_addr, rport, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:
             udp_transport = self.tunnel_mgr.udp_listeners.get(rport)
             if not udp_transport:
                 return
+
+            target_addr = (client_addr[0], int(client_addr[1]))
 
             async def tcp_to_udp(dst, addr, port):
                 try:
@@ -681,11 +682,12 @@ class TunnelServer:
             logger.error(f"UDP桥接处理错误: {str(e)}")
         finally:
             try:
-                conn = self.tunnel_mgr.udp_connections[port][addr]
+                conn = self.tunnel_mgr.udp_connections[rport][client_addr]
                 if 'writer' in conn:
                     if not conn['writer'].is_closing():
                         conn['writer'].close()
                         await dst_writer.wait_closed()
+                    del self.tunnel_mgr.udp_connections[rport][client_addr]
             except Exception:
                 pass
 

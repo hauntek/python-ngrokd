@@ -10,7 +10,7 @@
 [`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py) 采用多协程全异步处理，并发性能异常强悍！
 
 # 运行环境
-[`ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd.py) Python 2.7.9 或 Python 3.4.2 以上
+[`python-ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd.py) Python 2.7.9 或 Python 3.4.2 以上
 
 [`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py) Python 3.10.0 以上
 

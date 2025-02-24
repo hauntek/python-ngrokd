@@ -129,6 +129,8 @@ class TunnelManager:
                             conn = self.udp_connections[port][addr]
                             if 'writer' in conn:
                                 conn['writer'].close()
+                            if 'reader' in conn:
+                                conn['reader'].feed_eof()
                             del self.udp_connections[port][addr]
                         # 移除空隧道条目
                         if not self.udp_connections[port]:
@@ -195,7 +197,8 @@ class UdpTunnelHandler:
             reader = asyncio.StreamReader()
             writer = type('UdpWriter', (), {
                 'write': lambda s, d: reader.feed_data(d),
-                'drain': lambda _: None
+                'drain': lambda _: None,
+                'close': lambda _: None
             })()
 
             # 存入初始数据
@@ -689,9 +692,7 @@ class TunnelServer:
             try:
                 conn = self.tunnel_mgr.udp_connections[rport][client_addr]
                 if 'writer' in conn:
-                    if not conn['writer'].is_closing():
-                        conn['writer'].close()
-                        await dst_writer.wait_closed()
+                    conn['writer'].close()
                     del self.tunnel_mgr.udp_connections[rport][client_addr]
             except Exception:
                 pass

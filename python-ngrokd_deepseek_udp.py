@@ -659,28 +659,40 @@ class TunnelServer:
 
             target_addr = (client_addr[0], int(client_addr[1]))
 
-            async def tcp_to_udp(dst, addr, port):
+            loop = asyncio.get_running_loop()
+            last_active = loop.time()
+
+            async def transfer(src, dst_is_udp: bool):
+                nonlocal last_active
                 try:
-                    while True:
-                        data = await dst.read(CONFIG['bufsize'])
-                        if not data:
-                            break
-                        udp_transport.sendto(data, addr)
-                except ConnectionError:
+                    while data := await src.read(CONFIG['bufsize']):
+                        last_active = loop.time()
+                        if dst_is_udp:
+                            udp_transport.sendto(data, target_addr)
+                        else:
+                            dst_writer.write(data)
+                            await dst_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
                     pass
 
-            async def udp_to_tcp(src, dst):
-                try:
-                    while True:
-                        data = await asyncio.wait_for(src.read(CONFIG['bufsize']), timeout=CONFIG['timeout'])
-                        dst.write(data)
-                        await dst.drain()
-                except ConnectionError:
-                    pass
+            tcp_task = asyncio.create_task(transfer(dst_reader, True))
+            udp_task = asyncio.create_task(transfer(src_reader, False))
+
+            async def timeout_monitor():
+                check_interval = max(0.1, CONFIG['timeout'] / 10)
+                while True:
+                    now = loop.time() 
+                    if now - last_active > CONFIG['timeout']:
+                        tcp_task.cancel()
+                        udp_task.cancel()
+                        break
+                    await asyncio.sleep(check_interval)
 
             await asyncio.gather(
-                tcp_to_udp(dst_reader, target_addr, rport),
-                udp_to_tcp(src_reader, dst_writer)
+                tcp_task,
+                udp_task,
+                timeout_monitor(),
+                return_exceptions=True
             )
         except Exception as e:
             logger.error(f"UDP桥接处理错误: {str(e)}")

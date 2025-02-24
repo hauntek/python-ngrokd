@@ -195,7 +195,6 @@ class UdpTunnelHandler:
 
             # 存入初始数据
             reader.feed_data(data)
-            reader.feed_eof()
 
             # 存储连接信息
             self.tunnel_mgr.udp_connections[port][addr] = {

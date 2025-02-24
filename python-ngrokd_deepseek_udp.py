@@ -143,8 +143,15 @@ class TunnelManager:
             if client_id in self.reader_map:
                 del self.reader_map[client_id]
 
-            # 清理等待队列
+            # 清理等待队列，并注入终止标记
+            queue = self.pending_queues.get(client_id)
+            if queue:
+                queue.put_nowait(None)
+
+            # 清理认证客户端记录
             self.pending_queues.pop(client_id, None)
+
+            # 清理客户端隧道记录
             if client_id in self.auth_clients:
                 self.auth_clients.remove(client_id)
             self.client_tunnels.pop(client_id, None)
@@ -559,6 +566,8 @@ class TunnelServer:
                     self.tunnel_mgr.reader_map[client_id] = reader
                 # 处理代理客户端
                 req = await self.tunnel_mgr.pending_queues[proxy_id].get()
+                if req is None:
+                    return
                 # 替换请求代理连接
                 await self._send_msg(self.tunnel_mgr.writer_map[proxy_id], {'Type': 'ReqProxy', 'Payload': {}})
                 # 发送StartProxy
@@ -681,19 +690,22 @@ class TunnelServer:
             async def timeout_monitor():
                 check_interval = max(0.1, CONFIG['timeout'] / 10)
                 while True:
-                    now = loop.time() 
+                    now = loop.time()
                     if now - last_active > CONFIG['timeout']:
                         tcp_task.cancel()
                         udp_task.cancel()
                         break
                     await asyncio.sleep(check_interval)
 
-            await asyncio.gather(
-                tcp_task,
-                udp_task,
-                timeout_monitor(),
-                return_exceptions=True
+            done, pending = await asyncio.wait(
+                {tcp_task, udp_task, asyncio.create_task(timeout_monitor())},
+                return_when=asyncio.FIRST_COMPLETED
             )
+
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
         except Exception as e:
             logger.error(f"UDP桥接处理错误: {str(e)}")
         finally:

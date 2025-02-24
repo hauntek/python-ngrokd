@@ -128,8 +128,6 @@ class TunnelManager:
                         # 清理UDP连接
                         for addr in list(self.udp_connections[port].keys()):
                             conn = self.udp_connections[port][addr]
-                            if 'writer' in conn:
-                                conn['writer'].close()
                             if 'reader' in conn:
                                 conn['reader'].feed_eof()
                             del self.udp_connections[port][addr]
@@ -190,16 +188,13 @@ class UdpTunnelHandler:
             # 如果已有连接，直接转发
             if addr in self.tunnel_mgr.udp_connections[port]:
                 conn = self.tunnel_mgr.udp_connections[port][addr]
-                conn['writer'].write(data)
-                conn['writer'].drain()
+                conn['writer'].sendall(data)
                 return
 
             # 创建虚拟通道
             reader = asyncio.StreamReader()
             writer = type('UdpWriter', (), {
-                'write': lambda s, d: reader.feed_data(d),
-                'drain': lambda _: None,
-                'close': lambda _: None
+                'sendall': lambda s, d: reader.feed_data(d)
             })()
 
             # 存入初始数据
@@ -691,10 +686,7 @@ class TunnelServer:
             logger.error(f"UDP桥接处理错误: {str(e)}")
         finally:
             try:
-                conn = self.tunnel_mgr.udp_connections[rport][client_addr]
-                if 'writer' in conn:
-                    conn['writer'].close()
-                    del self.tunnel_mgr.udp_connections[rport][client_addr]
+                del self.tunnel_mgr.udp_connections[rport][client_addr]
             except Exception:
                 pass
 

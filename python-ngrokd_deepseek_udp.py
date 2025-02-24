@@ -191,7 +191,7 @@ class UdpTunnelHandler:
             if addr in self.tunnel_mgr.udp_connections[port]:
                 conn = self.tunnel_mgr.udp_connections[port][addr]
                 conn['writer'].write(data)
-                await conn['writer'].drain()
+                conn['writer'].drain()
                 return
 
             # 创建虚拟通道

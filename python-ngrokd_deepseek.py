@@ -162,33 +162,33 @@ class UdpTunnelHandler:
         self.tunnel_mgr = tunnel_mgr
 
     async def start_listener(self, port: int):
-        """启动UDP监听（接口与TCP完全一致）"""
-        if port in self.tunnel_mgr.udp_listeners:
-            return
+        async with self.tunnel_mgr.lock:
+            if port in self.tunnel_mgr.udp_listeners:
+                return
 
-        class ServerProtocol:
-            def __init__(self, handler):
-                self.handler = handler
+            class ServerProtocol:
+                def __init__(self, handler):
+                    self.handler = handler
 
-            def connection_made(self, transport):
-                pass
+                def connection_made(self, transport):
+                    pass
 
-            def datagram_received(self, data, addr):
-                asyncio.create_task(self.handler._handle_udp_connection(data, addr, port))
+                def datagram_received(self, data, addr):
+                    asyncio.create_task(self.handler._handle_udp_connection(data, addr, port))
 
-            def error_received(self, exc):
-                logger.error(f"UDP错误: {exc}")
+                def error_received(self, exc):
+                    logger.error(f"UDP错误: {exc}")
 
-            def connection_lost(self, exc):
-                pass
+                def connection_lost(self, exc):
+                    pass
 
-        loop = asyncio.get_running_loop()
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: ServerProtocol(self),
-            local_addr=('0.0.0.0', port)
-        )
-        self.tunnel_mgr.udp_listeners[port] = transport
-        logger.info(f"UDP监听已启动 port:{port}")
+            loop = asyncio.get_running_loop()
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: ServerProtocol(self),
+                local_addr=('0.0.0.0', port)
+            )
+            self.tunnel_mgr.udp_listeners[port] = transport
+            logger.info(f"UDP监听已启动 port:{port}")
 
     async def _handle_udp_connection(self, data: bytes, addr: tuple, port: int):
         try:

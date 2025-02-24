@@ -5,17 +5,17 @@
 
 基本上已经完善！并且24*7小时长时间工作，在期间我们多次并发压力测试，服务端退出资源释放等，均无任何问题。
 
-[`ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/ngrokd.py) 采用多线程全同步处理，并发性能相当强悍！
+[`python-ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd.py) 采用多线程全同步处理，并发性能相当强悍！
 
 [`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py) 采用多协程全异步处理，并发性能异常强悍！
 
 # 运行环境
-[`ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/ngrokd.py) Python 2.7.9 或 Python 3.4.2 以上
+[`ngrokd.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd.py) Python 2.7.9 或 Python 3.4.2 以上
 
 [`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py) Python 3.10.0 以上
 
 # 运行方法
-ngrokd.py 配置后,直接运行即可.
+python-ngrokd.py 配置后,直接运行即可.
 
 python-ngrokd_deepseek.py 配置后,直接运行即可.
 

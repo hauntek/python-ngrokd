@@ -47,7 +47,8 @@ class TunnelManager:
         self.udp_connections = defaultdict(lambda: defaultdict(dict))
         self.writer_map: dict[str, asyncio.StreamWriter] = {}
         self.reader_map: dict[str, asyncio.StreamReader] = {}
-        self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
+        self.tcp_port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
+        self.udp_port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
         self.pending_queues = defaultdict(asyncio.Queue)
         self.auth_clients = list()
         self.lock = asyncio.Lock()
@@ -61,18 +62,18 @@ class TunnelManager:
 
             if tunnel_type == 'tcp':
                 if (port := config.get('RemotePort', 0)) == 0:
-                    if not self.port_pool:
+                    if not self.tcp_port_pool:
                         raise ValueError("No available ports")
-                    port = self.port_pool.popleft()
+                    port = self.tcp_port_pool.popleft()
                 elif self.tunnels.get(f"tcp://{CONFIG['domain']}:{port}"):
                     raise ValueError(f"Port {port} already in use")
                 config['RemotePort'] = port
 
             if tunnel_type == 'udp':
                 if (port := config.get('RemotePort', 0)) == 0:
-                    if not self.port_pool:
+                    if not self.udp_port_pool:
                         raise ValueError("No available ports")
-                    port = self.port_pool.popleft()
+                    port = self.udp_port_pool.popleft()
                 elif self.tunnels.get(f"udp://{CONFIG['domain']}:{port}"):
                     raise ValueError(f"Port {port} already in use")
                 config['RemotePort'] = port
@@ -113,7 +114,7 @@ class TunnelManager:
                 if self.tunnels[url]['client_id'] == client_id:
                     if self.tunnels[url]['type'] == 'tcp':
                         port = self.tunnels[url]['config']['RemotePort']
-                        self.port_pool.append(port)
+                        self.tcp_port_pool.append(port)
                         if self.tcp_listeners[port].is_serving():
                             self.tcp_listeners[port].close()
                             await self.tcp_listeners[port].wait_closed()
@@ -121,7 +122,7 @@ class TunnelManager:
                         logger.info(f"TCP监听已关闭 port:{port}")
                     if self.tunnels[url]['type'] == 'udp':
                         port = self.tunnels[url]['config']['RemotePort']
-                        self.port_pool.append(port)
+                        self.udp_port_pool.append(port)
                         self.udp_listeners[port].close()
                         del self.udp_listeners[port]
                         # 清理UDP连接

@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 3.10.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: 2.3.0
+# Version: 2.4.0
 import asyncio
 import ssl
 import json
@@ -42,10 +42,13 @@ class TunnelManager:
     def __init__(self):
         self.tunnels: dict[str, dict] = {}
         self.client_tunnels: dict[str, list[str]] = defaultdict(list)
-        self.listeners: dict[int, asyncio.Server] = {}
+        self.tcp_listeners: dict[int, asyncio.Server] = {}
+        self.udp_listeners: dict[int, asyncio.DatagramTransport] = {}
+        self.udp_connections = defaultdict(lambda: defaultdict(dict))
         self.writer_map: dict[str, asyncio.StreamWriter] = {}
         self.reader_map: dict[str, asyncio.StreamReader] = {}
-        self.port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
+        self.tcp_port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
+        self.udp_port_pool = deque(range(CONFIG['min_port'], CONFIG['max_port']))
         self.pending_queues = defaultdict(asyncio.Queue)
         self.auth_clients = list()
         self.lock = asyncio.Lock()
@@ -59,10 +62,19 @@ class TunnelManager:
 
             if tunnel_type == 'tcp':
                 if (port := config.get('RemotePort', 0)) == 0:
-                    if not self.port_pool:
+                    if not self.tcp_port_pool:
                         raise ValueError("No available ports")
-                    port = self.port_pool.popleft()
+                    port = self.tcp_port_pool.popleft()
                 elif self.tunnels.get(f"tcp://{CONFIG['domain']}:{port}"):
+                    raise ValueError(f"Port {port} already in use")
+                config['RemotePort'] = port
+
+            if tunnel_type == 'udp':
+                if (port := config.get('RemotePort', 0)) == 0:
+                    if not self.udp_port_pool:
+                        raise ValueError("No available ports")
+                    port = self.udp_port_pool.popleft()
+                elif self.tunnels.get(f"udp://{CONFIG['domain']}:{port}"):
                     raise ValueError(f"Port {port} already in use")
                 config['RemotePort'] = port
 
@@ -91,6 +103,8 @@ class TunnelManager:
             return f"https://{config['Hostname']}" if config['Hostname'] else f"https://{secrets.token_hex(4)}.{CONFIG['domain']}"
         elif tunnel_type == 'tcp':
             return f"tcp://{CONFIG['domain']}:{config['RemotePort']}"
+        elif tunnel_type == 'udp':
+            return f"udp://{CONFIG['domain']}:{config['RemotePort']}"
         raise ValueError(f"Invalid tunnel type: {tunnel_type}")
 
     async def cleanup_client(self, client_id: str):
@@ -100,12 +114,27 @@ class TunnelManager:
                 if self.tunnels[url]['client_id'] == client_id:
                     if self.tunnels[url]['type'] == 'tcp':
                         port = self.tunnels[url]['config']['RemotePort']
-                        self.port_pool.append(port)
-                        if self.listeners[port].is_serving():
-                            self.listeners[port].close()
-                            await self.listeners[port].wait_closed()
-                        del self.listeners[port]
+                        self.tcp_port_pool.append(port)
+                        if self.tcp_listeners[port].is_serving():
+                            self.tcp_listeners[port].close()
+                            await self.tcp_listeners[port].wait_closed()
+                        del self.tcp_listeners[port]
                         logger.info(f"TCP监听已关闭 port:{port}")
+                    if self.tunnels[url]['type'] == 'udp':
+                        port = self.tunnels[url]['config']['RemotePort']
+                        self.udp_port_pool.append(port)
+                        self.udp_listeners[port].close()
+                        del self.udp_listeners[port]
+                        # 清理UDP连接
+                        for addr in list(self.udp_connections[port].keys()):
+                            conn = self.udp_connections[port][addr]
+                            if 'reader' in conn:
+                                conn['reader'].feed_eof()
+                            del self.udp_connections[port][addr]
+                        # 移除空隧道条目
+                        if not self.udp_connections[port]:
+                            del self.udp_connections[port]
+                        logger.info(f"UDP监听已关闭 port:{port}")
                     del self.tunnels[url]
 
             # 清理读写记录
@@ -114,11 +143,108 @@ class TunnelManager:
             if client_id in self.reader_map:
                 del self.reader_map[client_id]
 
-            # 清理等待队列
+            # 清理等待队列，并注入终止标记
+            queue = self.pending_queues.get(client_id)
+            if queue:
+                queue.put_nowait(None)
+
+            # 清理认证客户端记录
             self.pending_queues.pop(client_id, None)
+
+            # 清理客户端隧道记录
             if client_id in self.auth_clients:
                 self.auth_clients.remove(client_id)
             self.client_tunnels.pop(client_id, None)
+
+# === UDP隧道处理 ===
+class UdpTunnelHandler:
+    def __init__(self, tunnel_mgr: TunnelManager):
+        self.tunnel_mgr = tunnel_mgr
+
+    async def start_listener(self, port: int):
+        """启动UDP监听（接口与TCP完全一致）"""
+        if port in self.tunnel_mgr.udp_listeners:
+            return
+
+        class ServerProtocol:
+            def __init__(self, handler):
+                self.handler = handler
+
+            def connection_made(self, transport):
+                pass
+
+            def datagram_received(self, data, addr):
+                asyncio.create_task(self.handler._handle_udp_connection(data, addr, port))
+
+            def error_received(self, exc):
+                logger.error(f"UDP错误: {exc}")
+
+            def connection_lost(self, exc):
+                pass
+
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: ServerProtocol(self),
+            local_addr=('0.0.0.0', port)
+        )
+        self.tunnel_mgr.udp_listeners[port] = transport
+        logger.info(f"UDP监听已启动 port:{port}")
+
+    async def _handle_udp_connection(self, data: bytes, addr: tuple, port: int):
+        try:
+            # 如果已有连接，直接转发
+            if addr in self.tunnel_mgr.udp_connections[port]:
+                conn = self.tunnel_mgr.udp_connections[port][addr]
+                conn['writer'].sendall(data)
+                return
+
+            # 创建虚拟通道
+            reader = asyncio.StreamReader()
+            writer = type('UdpWriter', (), {
+                'sendall': lambda s, d: reader.feed_data(d)
+            })()
+
+            # 存入初始数据
+            reader.feed_data(data)
+
+            # 存储连接信息
+            self.tunnel_mgr.udp_connections[port][addr] = {
+                'reader': reader,
+                'writer': writer
+            }
+
+            lookup_url = f"udp://{CONFIG['domain']}:{port}"
+            # 查找对应的客户端
+            async with self.tunnel_mgr.lock:
+                tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
+                if not tunnel_info:
+                    return
+
+                client_id = tunnel_info['client_id']
+
+            # 生成客户端地址
+            client_addr = f"{addr[0]}:{addr[1]}"
+
+            # 记录待处理请求
+            await self.tunnel_mgr.pending_queues[client_id].put({
+                'reader': reader,
+                'writer': None,
+                'client_addr': client_addr,
+                'tunnel_url': lookup_url,
+                'time': time.time()
+            })
+
+        except Exception as e:
+            logger.error(f"UDP处理连接失败: {str(e)}")
+
+    async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
+        try:
+            data = json.dumps(msg).encode()
+            header = struct.pack('<II', len(data), 0)
+            writer.write(header + data)
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError) as e:
+            logger.warning(f"UDP控制消息发送失败: {str(e)}")
 
 # === TCP隧道处理 ===
 class TcpTunnelHandler:
@@ -127,11 +253,11 @@ class TcpTunnelHandler:
 
     async def start_listener(self, port: int):
         async with self.tunnel_mgr.lock:
-            if port in self.tunnel_mgr.listeners:
+            if port in self.tunnel_mgr.tcp_listeners:
                 return
 
             async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-                await self.handle_tcp_connection(reader, writer, port)
+                await self._handle_tcp_connection(reader, writer, port)
 
             server = await asyncio.start_server(
                 handle_connection,
@@ -139,10 +265,10 @@ class TcpTunnelHandler:
                 port=port,
                 reuse_address=True
             )
-            self.tunnel_mgr.listeners[port] = server
+            self.tunnel_mgr.tcp_listeners[port] = server
             logger.info(f"TCP监听已启动 port:{port}")
 
-    async def handle_tcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
+    async def _handle_tcp_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int):
         try:
             lookup_url = f"tcp://{CONFIG['domain']}:{port}"
             # 查找对应的客户端
@@ -344,6 +470,7 @@ class TunnelServer:
     def __init__(self):
         self.tunnel_mgr = TunnelManager()
         self.tcp_handler = TcpTunnelHandler(self.tunnel_mgr)
+        self.udp_handler = UdpTunnelHandler(self.tunnel_mgr)
         self.http_handler = HttpTunnelHandler(self.tunnel_mgr)
         self.ssl_ctx = self._create_ssl_context()
 
@@ -439,6 +566,8 @@ class TunnelServer:
                     self.tunnel_mgr.reader_map[client_id] = reader
                 # 处理代理客户端
                 req = await self.tunnel_mgr.pending_queues[proxy_id].get()
+                if req is None:
+                    return
                 # 替换请求代理连接
                 await self._send_msg(self.tunnel_mgr.writer_map[proxy_id], {'Type': 'ReqProxy', 'Payload': {}})
                 # 发送StartProxy
@@ -451,7 +580,14 @@ class TunnelServer:
                 })
 
                 # 启动数据桥接
-                await self._bridge_data(req['reader'], req['writer'], reader, writer)
+                url = req['tunnel_url']
+                protocol = url.split(":")[0]
+                if protocol == 'udp':
+                    rport = int(url.split(":")[-1])
+                    client_addr = req['client_addr'].split(':')
+                    await self._bridge_data_udp(req['reader'], client_addr, rport, reader, writer)
+                    return
+                await self._bridge_data_tcp(req['reader'], req['writer'], reader, writer)
                 return
 
             elif auth_msg['Type'] != 'Auth':
@@ -497,6 +633,8 @@ class TunnelServer:
                 logger.info(f"隧道已建立: {tunnel['url']}")
                 if tunnel['type'] == 'tcp':
                     await self.tcp_handler.start_listener(tunnel['config']['RemotePort'])
+                if tunnel['type'] == 'udp':
+                    await self.udp_handler.start_listener(tunnel['config']['RemotePort'])
                 await self._send_msg(writer, resp)
 
             except Exception as e:
@@ -522,7 +660,61 @@ class TunnelServer:
         except (ConnectionResetError, BrokenPipeError):
             pass
 
-    async def _bridge_data(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+    async def _bridge_data_udp(self, src_reader: asyncio.StreamReader, client_addr, rport, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+        try:
+            udp_transport = self.tunnel_mgr.udp_listeners.get(rport)
+            if not udp_transport:
+                return
+
+            target_addr = (client_addr[0], int(client_addr[1]))
+
+            loop = asyncio.get_running_loop()
+            last_active = loop.time()
+
+            async def transfer(src, dst_is_udp: bool):
+                nonlocal last_active
+                try:
+                    while data := await src.read(CONFIG['bufsize']):
+                        last_active = loop.time()
+                        if dst_is_udp:
+                            udp_transport.sendto(data, target_addr)
+                        else:
+                            dst_writer.write(data)
+                            await dst_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                    pass
+
+            tcp_task = asyncio.create_task(transfer(dst_reader, True))
+            udp_task = asyncio.create_task(transfer(src_reader, False))
+
+            async def timeout_monitor():
+                check_interval = max(0.1, CONFIG['timeout'] / 10)
+                while True:
+                    now = loop.time()
+                    if now - last_active > CONFIG['timeout']:
+                        tcp_task.cancel()
+                        udp_task.cancel()
+                        break
+                    await asyncio.sleep(check_interval)
+
+            done, pending = await asyncio.wait(
+                {tcp_task, udp_task, asyncio.create_task(timeout_monitor())},
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        except Exception as e:
+            logger.error(f"UDP桥接处理错误: {str(e)}")
+        finally:
+            try:
+                del self.tunnel_mgr.udp_connections[rport][client_addr]
+            except Exception:
+                pass
+
+    async def _bridge_data_tcp(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:
             async def forward(src, dst):
                 try:
@@ -544,7 +736,7 @@ class TunnelServer:
                 forward(dst_reader, src_writer)
             )
         except Exception as e:
-            logger.error(f"桥接处理错误: {str(e)}")
+            logger.error(f"TCP桥接处理错误: {str(e)}")
         finally:
             try:
                 if not src_writer.is_closing():

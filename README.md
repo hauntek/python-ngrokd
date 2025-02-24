@@ -1,7 +1,7 @@
 # python-ngrokd
 ![license](https://img.shields.io/badge/license-GPLV3-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![version](https://img.shields.io/badge/Release-v2.3-orange)
+![version](https://img.shields.io/badge/Release-v2.4-orange)
 
 基本上已经完善！并且24*7小时长时间工作，在期间我们多次并发压力测试，服务端退出资源释放等，均无任何问题。
 
@@ -21,6 +21,22 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
 
 # 温馨提示
 如果有小伙伴不想依赖环境运行，不妨可以试下PyInstaller，把py编译成可执行文件。
+
+## 更新日记 v2.4(2025/02/25)
+
+***
+
+1. **功能增强**
+   - 新增UDP端口服务监听及处理，支持UDP隧道注册
+
+2. **功能修复**
+   - 客户端退出时服务端部分代理长时间堵塞不会跟随退出
+
+**Tip**: 
+   - 1.由人工智能优化代码和生成更新日记（DeepSeek v3）
+   - 2.运行环境需Python 3.10.0 以上[`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py)
+
+***
 
 ## 更新日记 v2.3(2025/02/23)
 

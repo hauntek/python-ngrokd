@@ -167,7 +167,7 @@ class UdpTunnelHandler:
                 return
 
             class ServerProtocol:
-                def __init__(self, handler: 'UdpTunnelHandler'):
+                def __init__(self, handler: UdpTunnelHandler):
                     self.handler = handler
 
                 def connection_made(self, transport: asyncio.DatagramTransport):

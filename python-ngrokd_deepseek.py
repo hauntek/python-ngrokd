@@ -167,19 +167,19 @@ class UdpTunnelHandler:
                 return
 
             class ServerProtocol:
-                def __init__(self, handler):
+                def __init__(self, handler: 'UdpTunnelHandler'):
                     self.handler = handler
 
-                def connection_made(self, transport):
+                def connection_made(self, transport: asyncio.DatagramTransport):
                     pass
 
-                def datagram_received(self, data, addr):
+                def datagram_received(self, data: bytes, addr: tuple[str, int]):
                     asyncio.create_task(self.handler._handle_udp_connection(data, addr, port))
 
-                def error_received(self, exc):
+                def error_received(self, exc: OSError):
                     logger.error(f"UDP错误: {exc}")
 
-                def connection_lost(self, exc):
+                def connection_lost(self, exc: Exception | None):
                     pass
 
             loop = asyncio.get_running_loop()
@@ -671,21 +671,37 @@ class TunnelServer:
             loop = asyncio.get_running_loop()
             last_active = loop.time()
 
-            async def transfer(src, dst_is_udp: bool):
+            async def tcp_to_udp(src: asyncio.StreamReader):
+                nonlocal last_active
+                try:
+                    buffer = b''
+                    while data := await src.read(CONFIG['bufsize']):
+                        last_active = loop.time()
+                        buffer += data
+                        while len(buffer) >= 8:
+                            pkt_len, _ = struct.unpack('<II', buffer[:8])
+                            if len(buffer) < 8 + pkt_len:
+                                break
+                            udp_data = buffer[8:8+pkt_len]
+                            if udp_transport and target_addr:
+                                udp_transport.sendto(udp_data, target_addr)
+                            buffer = buffer[8+pkt_len:]
+                except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                    pass
+
+            async def udp_to_tcp(src: asyncio.StreamReader):
                 nonlocal last_active
                 try:
                     while data := await src.read(CONFIG['bufsize']):
                         last_active = loop.time()
-                        if dst_is_udp:
-                            udp_transport.sendto(data, target_addr)
-                        else:
-                            dst_writer.write(data)
-                            await dst_writer.drain()
+                        header = struct.pack('<LL', len(data), 0)
+                        dst_writer.write(header + data)
+                        await dst_writer.drain()
                 except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
                     pass
 
-            tcp_task = asyncio.create_task(transfer(dst_reader, True))
-            udp_task = asyncio.create_task(transfer(src_reader, False))
+            tcp_task = asyncio.create_task(tcp_to_udp(dst_reader))
+            udp_task = asyncio.create_task(udp_to_tcp(src_reader))
 
             async def timeout_monitor():
                 check_interval = max(0.1, CONFIG['timeout'] / 10)
@@ -716,7 +732,7 @@ class TunnelServer:
 
     async def _bridge_data_tcp(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:
-            async def forward(src, dst):
+            async def forward(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
                 try:
                     while data := await src.read(CONFIG['bufsize']):
                         dst.write(data)

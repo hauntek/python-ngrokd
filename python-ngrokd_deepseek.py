@@ -308,23 +308,27 @@ class HttpTunnelHandler:
     def _create_ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(CONFIG['ssl_cert'], CONFIG['ssl_key'])
+        # ctx.set_alpn_protocols(['h2', 'http/1.1'])
         return ctx
 
     async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            host = ''
+            # 检查是否TLS并升级TLS
+            reader, writer, is_ssl = await self.upgrade_to_tls(reader, writer, self.ssl_ctx)
 
-            is_ssl = await self._detect_ssl(reader)
-            if is_ssl:
-                host = await self._get_https_host(reader, writer)
-            else:
-                host = await self._parse_http_host(reader, "Host")
+            # 读取数据
+            initial_data = await reader.read(4096)
+            if not initial_data:
+                return
+            # 恢复数据
+            reader.feed_data(initial_data)
 
+            host = await self._parse_http_host(initial_data, "Host")
             if not host:
                 await self._send_bad_request(writer)
                 return
 
-            auth = await self._parse_http_host(reader, "Authorization")
+            auth = await self._parse_http_host(initial_data, "Authorization")
 
             protocol = 'https' if is_ssl else 'http'
             lookup_url = f"{protocol}://{host}"
@@ -359,38 +363,50 @@ class HttpTunnelHandler:
             writer.close()
             await writer.wait_closed()
 
-    async def _get_https_host(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> str:
+    async def upgrade_to_tls(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ssl_ctx: ssl.SSLContext) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bool]:
         try:
-            transport = writer.transport
-            protocol = asyncio.StreamReaderProtocol(reader)
+            peek_data = await reader.read(4096)
+            is_ssl = peek_data.startswith(b'\x16\x03')
+            if not is_ssl:
+                reader.feed_data(peek_data)
+                return reader, writer, is_ssl
 
-            new_transport = await asyncio.get_running_loop().start_tls(
-                transport=transport,
-                protocol=protocol,
-                sslcontext=self.ssl_ctx,
+            new_reader = asyncio.StreamReader()
+            new_reader.feed_data(peek_data)
+
+            loop = asyncio.get_running_loop()
+            new_transport = await loop.start_tls(
+                transport=writer.transport,
+                protocol=asyncio.StreamReaderProtocol(new_reader),
+                sslcontext=ssl_ctx,
                 server_side=True
             )
 
-            ssl_socket: ssl.SSLSocket = new_transport.get_extra_info('ssl_object')
+            new_writer = asyncio.StreamWriter(
+                transport=new_transport,
+                protocol=asyncio.StreamReaderProtocol(new_reader),
+                reader=new_reader,
+                loop=loop
+            )
 
-            sni = ssl_socket.server_side and ssl_socket.context.get_servername()
-            return sni.decode() if sni else ''
+            if not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
 
+            return new_reader, new_writer, is_ssl
+
+        except (ssl.SSLError, OSError) as e:
+            logger.error(f"TLS 握手失败: {str(e)}")
+            if not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
+            raise
         except Exception as e:
-            logger.error(f"获取SNI失败: {str(e)}")
-            return ''
+            logger.error(f"TLS 升级异常: {str(e)}")
+            raise
 
-    async def _detect_ssl(self, reader: asyncio.StreamReader) -> bool:
-        peek_data = await reader.read(4096)
-        reader.feed_data(peek_data)
-        return peek_data.startswith(b'\x16\x03')
-
-    async def _parse_http_host(self, reader: asyncio.StreamReader, header_name: str) -> str:
+    async def _parse_http_host(self, data: bytes, header_name: str) -> str:
         try:
-            # 读取并恢复数据
-            data = await reader.read(4096)
-            reader.feed_data(data)
-
             # 按行分割数据
             headers = data.split(b'\r\n')
 

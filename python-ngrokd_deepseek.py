@@ -313,8 +313,8 @@ class HttpTunnelHandler:
 
     async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
-            # 检查是否TLS并升级TLS
-            reader, writer, is_ssl = await self.upgrade_to_tls(reader, writer, self.ssl_ctx)
+            # 判断是否为TLS
+            is_ssl = writer.get_extra_info('sslcontext') is not None
 
             # 读取数据
             initial_data = await reader.read(4096)
@@ -362,48 +362,6 @@ class HttpTunnelHandler:
             logger.error(f"HTTP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
-
-    async def upgrade_to_tls(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ssl_ctx: ssl.SSLContext) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bool]:
-        try:
-            peek_data = await reader.read(4096)
-            is_ssl = peek_data.startswith(b'\x16\x03')
-            if not is_ssl:
-                reader.feed_data(peek_data)
-                return reader, writer, is_ssl
-
-            new_reader = asyncio.StreamReader()
-            new_reader.feed_data(peek_data)
-
-            loop = asyncio.get_running_loop()
-            new_transport = await loop.start_tls(
-                transport=writer.transport,
-                protocol=asyncio.StreamReaderProtocol(new_reader),
-                sslcontext=ssl_ctx,
-                server_side=True
-            )
-
-            new_writer = asyncio.StreamWriter(
-                transport=new_transport,
-                protocol=asyncio.StreamReaderProtocol(new_reader),
-                reader=new_reader,
-                loop=loop
-            )
-
-            if not writer.is_closing():
-                writer.close()
-                await writer.wait_closed()
-
-            return new_reader, new_writer, is_ssl
-
-        except (ssl.SSLError, OSError) as e:
-            logger.error(f"TLS 握手失败: {str(e)}")
-            if not writer.is_closing():
-                writer.close()
-                await writer.wait_closed()
-            raise
-        except Exception as e:
-            logger.error(f"TLS 升级异常: {str(e)}")
-            raise
 
     async def _parse_http_host(self, data: bytes, header_name: str) -> str:
         try:

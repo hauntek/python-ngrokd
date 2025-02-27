@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 # 建议Python 3.10.0 以上运行
 # 项目地址: https://github.com/hauntek/python-ngrokd
-# Version: 2.4.0
+# Version: 2.5.0
 import asyncio
 import ssl
 import json
@@ -299,36 +299,114 @@ class TcpTunnelHandler:
             writer.close()
             await writer.wait_closed()
 
+import ssl
+from ssl import MemoryBIO
+
 # === HTTP/HTTPS处理 ===
-class HttpTunnelHandler:
+class HttpTunnelHandler(asyncio.Protocol):
     def __init__(self, tunnel_mgr: TunnelManager):
         self.tunnel_mgr = tunnel_mgr
         self.ssl_ctx = self._create_ssl_context()
 
+        self.transport = None
+        self._ssl_obj = None
+        self._incoming_bio = MemoryBIO()
+        self._outgoing_bio = MemoryBIO()
+        self.reader = asyncio.StreamReader()
+        self.writer = None
+        self._handshake_complete = False
+        self.running = False
+
+    def connection_made(self, transport):
+        self.transport = transport
+        self._ssl_obj = self.ssl_ctx.wrap_bio(
+            incoming=self._incoming_bio,
+            outgoing=self._outgoing_bio,
+            server_side=True
+        )
+
+        loop = asyncio.get_running_loop()
+        self.writer = asyncio.StreamWriter(
+            transport=self.transport,
+            protocol=asyncio.StreamReaderProtocol(self.reader),
+            reader=self.reader,
+            loop=loop
+        )
+
+    def data_received(self, data):
+        self._incoming_bio.write(data)
+        if self._handshake_complete == False:
+            self.reader.feed_data(data)
+
+        if self.running == False:
+            asyncio.create_task(self.handle_connection(self.reader, self.writer, data))
+            self.running = True
+
+    async def upgrade_to_tls(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        def ssl_write(data):
+            try:
+                self._ssl_obj.write(data)
+                encrypted = self._outgoing_bio.read()
+                if encrypted:
+                    self.transport.write(encrypted)
+            except ssl.SSLWantReadError:
+                self._write_outgoing()
+            except ssl.SSLWantWriteError:
+                self._write_outgoing()
+
+        while not self._handshake_complete:
+            try:
+                await asyncio.to_thread(self._ssl_obj.do_handshake)
+                self._handshake_complete = True
+                await self.reader.read(4096)
+
+                ssl_data = self._ssl_obj.read()
+                self.reader.feed_data(ssl_data)
+
+                self.writer.write = ssl_write
+
+                return self.reader, self.writer
+            except ssl.SSLWantReadError:
+                self._write_outgoing()
+            except ssl.SSLWantWriteError:
+                self._write_outgoing()
+            except Exception as e:
+                logger.debug(f"TLS握手失败: {e}")
+                self.transport.close()
+                raise
+        return self.reader, self.writer
+
+    def _write_outgoing(self):
+        data = self._outgoing_bio.read()
+        if data:
+            self.transport.write(data)
+
     def _create_ssl_context(self) -> ssl.SSLContext:
-        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(CONFIG['ssl_cert'], CONFIG['ssl_key'])
-        # ctx.set_alpn_protocols(['h2', 'http/1.1'])
+
+        ctx.verify_mode = ssl.CERT_NONE  # 允许自签名证书
+        ctx.check_hostname = False
         return ctx
 
-    async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, data: bytes):
         try:
             # 判断是否为TLS
-            is_ssl = writer.get_extra_info('sslcontext') is not None
+            is_ssl = data.startswith(b'\x16\x03')
+            if is_ssl:
+                # 获取SNI
+                host = self._parse_sni(data)
+                is_domain = host.endswith(f".{CONFIG['domain']}") if host else False
+                if is_domain:
+                    # 升级TLS
+                    reader, writer = await self.upgrade_to_tls()
+            else:
+                host = await self._parse_http_host(data, "Host")
+                if not host:
+                    await self._send_bad_request(writer)
+                    return
 
-            # 读取数据
-            initial_data = await reader.read(4096)
-            if not initial_data:
-                return
-            # 恢复数据
-            reader.feed_data(initial_data)
-
-            host = await self._parse_http_host(initial_data, "Host")
-            if not host:
-                await self._send_bad_request(writer)
-                return
-
-            auth = await self._parse_http_host(initial_data, "Authorization")
+                auth = await self._parse_http_host(data, "Authorization")
 
             protocol = 'https' if is_ssl else 'http'
             lookup_url = f"{protocol}://{host}"
@@ -362,6 +440,83 @@ class HttpTunnelHandler:
             logger.error(f"HTTP处理连接失败: {str(e)}")
             writer.close()
             await writer.wait_closed()
+
+    def _parse_sni(self, data: bytes) -> str:
+        try:
+            if len(data) < 5:
+                return ""
+
+            # 解析记录层
+            content_type = data[0]
+            if content_type != 0x16:  # 非握手协议
+                return ""
+
+            version = int.from_bytes(data[1:3], "big")
+            is_dtls = version in {0xFEFF, 0xFEFD, 0xFEFC}
+
+            # 计算记录层长度
+            if is_dtls:
+                if len(data) < 13:
+                    return ""
+                record_length = int.from_bytes(data[11:13], "big")
+                handshake_start = 13
+            else:
+                record_length = int.from_bytes(data[3:5], "big")
+                handshake_start = 5
+        
+            # 检查记录层是否完整
+            if len(data) < handshake_start + record_length:
+                return ""
+            handshake = data[handshake_start : handshake_start + record_length]
+
+            # 检查是否为ClientHello
+            if handshake[0] != 0x01:
+                return ""
+
+            # 调整初始偏移量
+            pos = 1 + 3  # 类型(1) + ClientHello长度(3)
+            if is_dtls:
+                pos += 2 + 3 + 3  # 跳过DTLS特有字段
+
+            # 跳过协议版本(2) + 随机数(32)
+            pos += 2 + 32
+
+            # 跳过会话ID
+            session_id_length = handshake[pos]
+            pos += 1 + session_id_length
+
+            # 跳过密码套件
+            cipher_suites_length = int.from_bytes(handshake[pos:pos+2], "big")
+            pos += 2 + cipher_suites_length
+
+            # 跳过压缩方法
+            compression_methods_length = handshake[pos]
+            pos += 1 + compression_methods_length
+
+            # 解析扩展长度
+            extensions_length = int.from_bytes(handshake[pos:pos+2], "big")
+            pos += 2
+            end_ext = pos + extensions_length
+
+            # 遍历扩展
+            while pos < end_ext:
+                ext_type = int.from_bytes(handshake[pos:pos+2], "big")
+                ext_length = int.from_bytes(handshake[pos+2:pos+4], "big")
+                pos += 4
+                if ext_type == 0x00:  # SNI扩展
+                    sni_list_length = int.from_bytes(handshake[pos:pos+2], "big")
+                    pos += 2
+                    if sni_list_length > 0 and handshake[pos] == 0x00:  # 类型为host_name
+                        pos += 1  # 跳过类型
+                        name_length = int.from_bytes(handshake[pos:pos+2], "big")
+                        pos += 2
+                        return handshake[pos:pos+name_length].decode()
+                else:
+                    pos += ext_length
+            return ""
+        except Exception as e:
+            logger.debug(f"SNI解析失败: {e}")
+            return ""
 
     async def _parse_http_host(self, data: bytes, header_name: str) -> str:
         try:
@@ -433,7 +588,6 @@ class TunnelServer:
         self.tunnel_mgr = TunnelManager()
         self.tcp_handler = TcpTunnelHandler(self.tunnel_mgr)
         self.udp_handler = UdpTunnelHandler(self.tunnel_mgr)
-        self.http_handler = HttpTunnelHandler(self.tunnel_mgr)
         self.ssl_ctx = self._create_ssl_context()
 
     def _create_ssl_context(self) -> ssl.SSLContext:
@@ -442,6 +596,7 @@ class TunnelServer:
         return ctx
 
     async def start_servers(self):
+        loop = asyncio.get_running_loop()
         async with await asyncio.start_server(
             self._handle_control,
             host=CONFIG['host'],
@@ -449,17 +604,16 @@ class TunnelServer:
             ssl=self.ssl_ctx,
             reuse_address=True
         ) as ctrl_srv, \
-        await asyncio.start_server(
-            self.http_handler.handle_connection,
+        await loop.create_server(
+            protocol_factory=lambda: HttpTunnelHandler(self.tunnel_mgr),
             host=CONFIG['host'],
             port=CONFIG['http_port'],
             reuse_address=True
         ) as http_srv, \
-        await asyncio.start_server(
-            self.http_handler.handle_connection,
+        await loop.create_server(
+            protocol_factory=lambda: HttpTunnelHandler(self.tunnel_mgr),
             host=CONFIG['host'],
             port=CONFIG['https_port'],
-            ssl=self.http_handler.ssl_ctx,
             reuse_address=True
         ) as https_srv:
             logger.info(f"控制服务已启动，监听端口: {CONFIG['control_port']}")

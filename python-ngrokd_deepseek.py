@@ -108,33 +108,53 @@ class TunnelManager:
         raise ValueError(f"Invalid tunnel type: {tunnel_type}")
 
     async def cleanup_client(self, client_id: str):
+        async def _cleanup_tcp_tunnel(self, port: int):
+            if port in self.tcp_listeners:
+                try:
+                    listener = self.tcp_listeners[port]
+                    if listener.is_serving():
+                        listener.close()
+                        await listener.wait_closed()
+                    logger.info(f"TCP监听已关闭 port:{port}")
+                except Exception as e:
+                    logger.error(f"关闭TCP监听器时出错 port:{port}, error: {e}")
+                self.tcp_listeners.pop(port, None)
+
+        async def _cleanup_udp_tunnel(self, port: int):
+            if port in self.udp_listeners:
+                try:
+                    transport = self.udp_listeners[port]
+                    transport.close()
+                    logger.info(f"UDP监听已关闭 port:{port}")
+                except Exception as e:
+                    logger.error(f"关闭UDP监听器时出错 port:{port}, error: {e}")
+                self.udp_listeners.pop(port, None)
+            # 清理UDP连接
+            if port in self.udp_connections:
+                for addr in list(self.udp_connections[port].keys()):
+                    queue = self.udp_connections[port][addr]
+                    if queue is not None:
+                        try:
+                            queue.put_nowait(None)
+                        except asyncio.QueueFull:
+                            await queue.put(None)
+                    self.udp_connections[port].pop(addr, None)
+                # 移除空隧道条目
+                if not self.udp_connections[port]:
+                    self.udp_connections.pop(port, None)
+
         async with self.lock:
-            # 清理隧道记录
+            # 清理隧道记录及监听
             for url in list(self.tunnels.keys()):
                 if self.tunnels[url]['client_id'] == client_id:
                     if self.tunnels[url]['type'] == 'tcp':
                         port = self.tunnels[url]['config']['RemotePort']
                         self.tcp_port_pool.append(port)
-                        if self.tcp_listeners[port].is_serving():
-                            self.tcp_listeners[port].close()
-                            await self.tcp_listeners[port].wait_closed()
-                        del self.tcp_listeners[port]
-                        logger.info(f"TCP监听已关闭 port:{port}")
+                        await self._cleanup_tcp_tunnel(port)
                     if self.tunnels[url]['type'] == 'udp':
                         port = self.tunnels[url]['config']['RemotePort']
                         self.udp_port_pool.append(port)
-                        self.udp_listeners[port].close()
-                        del self.udp_listeners[port]
-                        # 清理UDP连接
-                        for addr in list(self.udp_connections[port].keys()):
-                            queue = self.udp_connections[port][addr]
-                            if queue:
-                                queue.put_nowait(None)
-                            del self.udp_connections[port][addr]
-                        # 移除空隧道条目
-                        if not self.udp_connections[port]:
-                            del self.udp_connections[port]
-                        logger.info(f"UDP监听已关闭 port:{port}")
+                        await self._cleanup_udp_tunnel(port)
                     del self.tunnels[url]
 
             # 清理读写记录
@@ -145,8 +165,11 @@ class TunnelManager:
 
             # 清理等待队列，并注入终止标记
             queue = self.pending_queues.get(client_id)
-            if queue:
-                queue.put_nowait(None)
+            if queue is not None:
+                try:
+                    queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    await queue.put(None)
 
             # 清理认证客户端记录
             self.pending_queues.pop(client_id, None)
@@ -694,10 +717,8 @@ class TunnelServer:
         except Exception as e:
             logger.error(f"UDP桥接处理错误: {str(e)}")
         finally:
-            try:
-                del self.tunnel_mgr.udp_connections[rport][addr]
-            except Exception:
-                pass
+            if rport in self.tunnel_mgr.udp_connections:
+                self.tunnel_mgr.udp_connections[rport].pop(addr, None)
 
     async def _bridge_data_tcp(self, src_reader: asyncio.StreamReader, src_writer: asyncio.StreamWriter, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:

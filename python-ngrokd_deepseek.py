@@ -633,7 +633,7 @@ class TunnelServer:
                 await self._send_msg(writer, resp)
 
         elif msg['Type'] == 'Ping':
-            await self._send_msg(writer, {'Type': 'Pong'})
+            await self._send_msg(writer, {'Type': 'Pong', 'Payload': {}})
 
     async def _send_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:

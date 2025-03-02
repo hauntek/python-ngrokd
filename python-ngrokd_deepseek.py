@@ -128,15 +128,15 @@ class TunnelManager:
             except Exception as e:
                 logger.error(f"关闭UDP监听器时出错 port:{port}, error: {e}")
             self.udp_listeners.pop(port, None)
+
         # 清理UDP连接
         if port in self.udp_connections:
             for addr in list(self.udp_connections[port].keys()):
                 queue = self.udp_connections[port][addr]
-                if queue is not None:
-                    try:
-                        queue.put_nowait(None)
-                    except asyncio.QueueFull:
-                        await queue.put(None)
+                try:
+                    queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    await queue.put(None)
                 del self.udp_connections[port][addr]
             del self.udp_connections[port]
 
@@ -162,15 +162,13 @@ class TunnelManager:
                 del self.reader_map[client_id]
 
             # 清理等待队列，并注入终止标记
-            queue = self.pending_queues.get(client_id)
-            if queue is not None:
+            if client_id in self.pending_queues:
+                queue = self.pending_queues[client_id]
                 try:
                     queue.put_nowait(None)
                 except asyncio.QueueFull:
                     await queue.put(None)
-
-            # 清理认证客户端记录
-            self.pending_queues.pop(client_id, None)
+                del self.pending_queues[client_id]
 
             # 清理客户端隧道记录
             if client_id in self.auth_clients:

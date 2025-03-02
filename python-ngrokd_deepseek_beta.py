@@ -117,7 +117,7 @@ class TunnelManager:
                 logger.info(f"TCP监听已关闭 port:{port}")
             except Exception as e:
                 logger.error(f"关闭TCP监听器时出错 port:{port}, error: {e}")
-            self.tcp_listeners.pop(port, None)
+            del self.tcp_listeners[port]
 
     async def _cleanup_udp_tunnel(self, port: int):
         if port in self.udp_listeners:
@@ -127,7 +127,7 @@ class TunnelManager:
                 logger.info(f"UDP监听已关闭 port:{port}")
             except Exception as e:
                 logger.error(f"关闭UDP监听器时出错 port:{port}, error: {e}")
-            self.udp_listeners.pop(port, None)
+            del self.udp_listeners[port]
 
         # 清理UDP连接
         if port in self.udp_connections:

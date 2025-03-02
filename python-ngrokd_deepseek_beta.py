@@ -137,10 +137,8 @@ class TunnelManager:
                         queue.put_nowait(None)
                     except asyncio.QueueFull:
                         await queue.put(None)
-                self.udp_connections[port].pop(addr, None)
-            # 移除空隧道条目
-            if not self.udp_connections[port]:
-                self.udp_connections.pop(port, None)
+                del self.udp_connections[port][addr]
+            del self.udp_connections[port]
 
     async def cleanup_client(self, client_id: str):
         async with self.lock:

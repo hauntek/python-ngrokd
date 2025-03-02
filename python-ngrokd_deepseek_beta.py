@@ -159,9 +159,9 @@ class TunnelManager:
 
             # 清理读写记录
             if client_id in self.writer_map:
-                self.writer_map.pop(client_id, None)
+                del self.writer_map[client_id]
             if client_id in self.reader_map:
-                self.reader_map.pop(client_id, None)
+                del self.reader_map[client_id]
 
             # 清理等待队列，并注入终止标记
             queue = self.pending_queues.get(client_id)

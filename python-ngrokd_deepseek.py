@@ -640,7 +640,7 @@ class TunnelServer:
         except (ConnectionResetError, BrokenPipeError):
             pass
 
-    async def _bridge_data_udp(self, queue: asyncio.Queue, addr: tuple[str, str], rport: int, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
+    async def _bridge_data_udp(self, src_queue: asyncio.Queue, addr: tuple[str, str], rport: int, dst_reader: asyncio.StreamReader, dst_writer: asyncio.StreamWriter):
         try:
             udp_transport = self.tunnel_mgr.udp_listeners.get(rport)
             if not udp_transport:
@@ -688,8 +688,8 @@ class TunnelServer:
                 except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
                     pass
 
-            udp_task = asyncio.create_task(udp_to_tcp(queue, "服务端 UDP -> 客户端 TCP"))
-            tcp_task = asyncio.create_task(tcp_to_udp(dst_reader, "客户端 TCP -> 服务端 UDP"))
+            udp_task = asyncio.create_task(udp_to_tcp(src_queue, "服务端 UDP -> 客户端 TCP"))
+            tcp_task = asyncio.create_task(tcp_to_udp(dst_reader, "服务端 UDP <- 客户端 TCP"))
 
             async def timeout_monitor():
                 check_interval = max(0.1, CONFIG['timeout'] / 10)
@@ -738,7 +738,7 @@ class TunnelServer:
                         pass
 
             task1 = asyncio.create_task(forward(src_reader, dst_writer, "服务端 TCP -> 客户端 TCP"))
-            task2 = asyncio.create_task(forward(dst_reader, src_writer, "客户端 TCP -> 服务端 TCP"))
+            task2 = asyncio.create_task(forward(dst_reader, src_writer, "服务端 TCP <- 客户端 TCP"))
 
             done, pending = await asyncio.wait({task1, task2}, return_when=asyncio.FIRST_COMPLETED)
 

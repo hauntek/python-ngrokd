@@ -27,7 +27,7 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
 ***
 
 1. **功能增强**
-   - 新增UDP端口监听服务和UDP请求处理，支持UDP隧道注册
+   - 新增UDP端口监听服务和UDP请求处理，支持UDP隧道注册（UDP over TCP）
    - UDP请求连接采用相同`addr`复用代理客户端，减少`ReqProxy`
    - UDP数据转发给客户端采用大小端消息头以确保数据准确性的分割
 

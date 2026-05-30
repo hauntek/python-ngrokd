@@ -896,7 +896,7 @@ class TunnelServer:
                     try:
                         if not dst.is_closing():
                             dst.close()
-                            await dst.wait_closed()
+                            # await dst.wait_closed()
                     except Exception:
                         pass
 
@@ -915,7 +915,7 @@ class TunnelServer:
             try:
                 if not src_writer.is_closing():
                     src_writer.close()
-                    await src_writer.wait_closed()
+                    # await src_writer.wait_closed()
             except Exception:
                 pass
 

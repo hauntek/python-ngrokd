@@ -22,6 +22,23 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
 # 温馨提示
 如果有小伙伴不想依赖环境运行，不妨可以试下PyInstaller，把py编译成可执行文件。
 
+## 更新日记 v2.5(2026/05/31)
+
+***
+
+1. **功能增强**
+   - 采用全新`HttpTunnelHandler`实现`StreamReader`和`StreamWriter`来进行TLS加密解密
+   - 使用全新的解析SNI记录层来判断是否为TLS并支持升级TLS
+
+2. **功能修复**
+   - 访问HTTP/HTTPS服务有几率导致长时间挂起无法访问
+
+**Tip**: 
+   - 1.由人工智能优化代码和生成更新日记（DeepSeek v3）
+   - 2.运行环境需Python 3.10.0 以上[`python-ngrokd_deepseek.py`](https://github.com/hauntek/python-ngrokd/blob/master/python-ngrokd_deepseek.py)
+
+***
+
 ## 更新日记 v2.4(2025/02/25)
 
 ***

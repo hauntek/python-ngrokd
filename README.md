@@ -1,7 +1,7 @@
 # python-ngrokd
 ![license](https://img.shields.io/badge/license-GPLV3-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![version](https://img.shields.io/badge/Release-v2.4-orange)
+![version](https://img.shields.io/badge/Release-v2.5-orange)
 
 基本上已经完善！并且24*7小时长时间工作，在期间我们多次并发压力测试，服务端退出资源释放等，均无任何问题。
 

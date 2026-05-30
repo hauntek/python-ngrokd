@@ -284,7 +284,7 @@ class TcpTunnelHandler:
                 tunnel_info = self.tunnel_mgr.tunnels.get(lookup_url)
                 if not tunnel_info:
                     writer.close()
-                    await writer.wait_closed()
+                    # await writer.wait_closed()
                     return
 
                 client_id = tunnel_info['client_id']
@@ -306,7 +306,7 @@ class TcpTunnelHandler:
         except Exception as e:
             logger.error(f"TCP处理连接失败: {str(e)}")
             writer.close()
-            await writer.wait_closed()
+            # await writer.wait_closed()
 
     async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
@@ -317,7 +317,7 @@ class TcpTunnelHandler:
         except (ConnectionResetError, BrokenPipeError) as e:
             logger.warning(f"TCP控制消息发送失败: {str(e)}")
             writer.close()
-            await writer.wait_closed()
+            # await writer.wait_closed()
 
 import ssl
 from ssl import MemoryBIO
@@ -467,7 +467,7 @@ class HttpTunnelHandler(asyncio.Protocol):
         except Exception as e:
             logger.error(f"HTTP处理连接失败: {str(e)}")
             writer.close()
-            await writer.wait_closed()
+            # await writer.wait_closed()
 
     def _parse_sni(self, data: bytes) -> str:
         try:
@@ -569,9 +569,9 @@ class HttpTunnelHandler(asyncio.Protocol):
             b'Bad Request'
         )
         writer.write(response)
-        await writer.drain()
+        # await writer.drain()
         writer.close()
-        await writer.wait_closed()
+        # await writer.wait_closed()
 
     async def _send_not_authorized(self, writer: asyncio.StreamWriter):
         response = (
@@ -582,9 +582,9 @@ class HttpTunnelHandler(asyncio.Protocol):
             b'Authorization required'
         )
         writer.write(response)
-        await writer.drain()
+        # await writer.drain()
         writer.close()
-        await writer.wait_closed()
+        # await writer.wait_closed()
 
     async def _send_not_found(self, writer: asyncio.StreamWriter, host: str):
         html = f"Tunnel {host} not found"
@@ -595,9 +595,9 @@ class HttpTunnelHandler(asyncio.Protocol):
             f"{html}"
         )
         writer.write(response.encode())
-        await writer.drain()
+        # await writer.drain()
         writer.close()
-        await writer.wait_closed()
+        # await writer.wait_closed()
 
     async def _send_control_msg(self, writer: asyncio.StreamWriter, msg: dict):
         try:
@@ -608,7 +608,7 @@ class HttpTunnelHandler(asyncio.Protocol):
         except (ConnectionResetError, BrokenPipeError) as e:
             logger.warning(f"HTTP控制消息发送失败: {str(e)}")
             writer.close()
-            await writer.wait_closed()
+            # await writer.wait_closed()
 
 # === 主服务 ===
 class TunnelServer:

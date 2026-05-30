@@ -335,6 +335,7 @@ class HttpTunnelHandler(asyncio.Protocol):
         self._handshake_complete = False
         self.reader = asyncio.StreamReader()
         self.writer = None
+
         self.worker_task = None
 
     def connection_made(self, transport):

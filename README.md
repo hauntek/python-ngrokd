@@ -27,8 +27,9 @@ python-ngrokd_deepseek.py 配置后,直接运行即可.
 ***
 
 1. **功能增强**
-   - 采用全新`HttpTunnelHandler`实现`StreamReader`和`StreamWriter`来进行TLS加密解密
-   - 使用全新的解析SNI记录层来判断是否为TLS并支持升级TLS
+   - 采用全新实现`StreamReader`和`StreamWriter`来进行TLS加解密
+   - 全新实现的解析TLS`ClientHello`获取SNI域名以支持升级TLS
+   - 如`Subdomain`则升级TLS，`Hostname`则使用本地后端TLS
 
 2. **功能修复**
    - 访问HTTP/HTTPS服务有几率导致长时间挂起无法访问

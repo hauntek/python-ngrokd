@@ -333,6 +333,7 @@ class HttpTunnelHandler(asyncio.Protocol):
         self._incoming_bio = MemoryBIO()
         self._outgoing_bio = MemoryBIO()
         self._handshake_complete = False
+        self._handshake_bufsize = 0
         self.reader = asyncio.StreamReader()
         self.writer = None
 
@@ -362,6 +363,7 @@ class HttpTunnelHandler(asyncio.Protocol):
 
         if self._handshake_complete == False:
             self.reader.feed_data(data)
+            self._handshake_bufsize += len(data)
 
         if not self.worker_task:
             self.worker_task = asyncio.create_task(self.handle_connection(self.reader, self.writer, data))
@@ -382,7 +384,10 @@ class HttpTunnelHandler(asyncio.Protocol):
             try:
                 await asyncio.to_thread(self._ssl_obj.do_handshake)
                 self._handshake_complete = True
-                await self.reader.read(4096)
+
+                if self._handshake_bufsize > 0:
+                    await self.reader.read(self._handshake_bufsize)
+                    self._handshake_bufsize = 0
 
                 ssl_data = self._ssl_obj.read()
                 self.reader.feed_data(ssl_data)

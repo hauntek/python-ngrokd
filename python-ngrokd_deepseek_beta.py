@@ -332,18 +332,13 @@ class HttpTunnelHandler(asyncio.Protocol):
         self._ssl_obj = None
         self._incoming_bio = MemoryBIO()
         self._outgoing_bio = MemoryBIO()
+        self._handshake_complete = False
         self.reader = asyncio.StreamReader()
         self.writer = None
-        self._handshake_complete = False
         self.worker_task = None
 
     def connection_made(self, transport):
         self.transport = transport
-        self._ssl_obj = self.ssl_ctx.wrap_bio(
-            incoming=self._incoming_bio,
-            outgoing=self._outgoing_bio,
-            server_side=True
-        )
 
         loop = asyncio.get_running_loop()
         self.writer = asyncio.StreamWriter(
@@ -354,7 +349,16 @@ class HttpTunnelHandler(asyncio.Protocol):
         )
 
     def data_received(self, data):
-        self._incoming_bio.write(data)
+        if not self._ssl_obj and data.startswith(b'\x16\x03'):
+            self._ssl_obj = self.ssl_ctx.wrap_bio(
+                incoming=self._incoming_bio,
+                outgoing=self._outgoing_bio,
+                server_side=True
+            )
+
+        if self._ssl_obj:
+            self._incoming_bio.write(data)
+
         if self._handshake_complete == False:
             self.reader.feed_data(data)
 
@@ -412,7 +416,7 @@ class HttpTunnelHandler(asyncio.Protocol):
     async def handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, data: bytes):
         try:
             # 判断是否为TLS
-            is_ssl = data.startswith(b'\x16\x03')
+            is_ssl = self._ssl_obj is not None
             if is_ssl:
                 # 获取SNI
                 host = self._parse_sni(data)

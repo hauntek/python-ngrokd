@@ -335,7 +335,7 @@ class HttpTunnelHandler(asyncio.Protocol):
         self.reader = asyncio.StreamReader()
         self.writer = None
         self._handshake_complete = False
-        self.running = False
+        self.worker_task = None
 
     def connection_made(self, transport):
         self.transport = transport
@@ -358,9 +358,8 @@ class HttpTunnelHandler(asyncio.Protocol):
         if self._handshake_complete == False:
             self.reader.feed_data(data)
 
-        if self.running == False:
-            asyncio.create_task(self.handle_connection(self.reader, self.writer, data))
-            self.running = True
+        if not self.worker_task:
+            self.worker_task = asyncio.create_task(self.handle_connection(self.reader, self.writer, data))
 
     async def upgrade_to_tls(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bytes]:
         def ssl_write(data):
